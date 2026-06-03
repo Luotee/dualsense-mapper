@@ -3,6 +3,20 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.5] - 2026-06-03
+
+### Fixed
+
+- **Horizontal scroll / two-finger swipe shook the whole window.** The
+  frontend never declared `overscroll-behavior`, so it defaulted to
+  `auto`: a sideways trackpad / two-finger swipe over the
+  vertically-scrolling pane rubber-banded the entire WebView2 surface
+  (and on some platforms armed a history back-navigation). The window
+  is a fixed `100vh` shell that should never scroll or bounce. Added
+  `html, body { overscroll-behavior: none }` in `rust/web/style.css` to
+  contain both axes. No content ever overflowed horizontally — this is
+  purely overscroll containment, not a layout change.
+
 ## [2.2.4] - 2026-05-18
 
 ### Fixed

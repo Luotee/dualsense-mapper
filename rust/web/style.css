@@ -6,6 +6,15 @@
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────── */
+html, body {
+  /* The window is a fixed 100vh shell (.app); nothing should rubber-band.
+     Without this, a horizontal trackpad / two-finger swipe over the
+     vertically-scrolling pane bounces the whole webview sideways (and on
+     some platforms triggers a history back-nav). `none` contains both axes
+     so left/right scroll never shakes the window. */
+  overscroll-behavior: none;
+}
+
 body {
   font-family: var(--font);
   font-size: 13px;
