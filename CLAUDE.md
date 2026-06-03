@@ -123,6 +123,54 @@ It means you built the CLI binary, not the GUI binary. That is not
 useful to the user. Re-read this section before assuming a one-liner
 `cargo build` is enough.
 
+## GUI frontend verification (browser click-through)
+
+Any change to `rust/web/` (the Tauri frontend) MUST be verified by
+actually loading the page in a browser and clicking every control —
+not by reading the diff and asserting it looks right. "It compiles"
+is not verification for a chrome layer that only fails at runtime.
+
+The catch: `rust/web/ipc.js` throws on load if `window.__TAURI__` is
+missing, so the frontend **cannot be opened in a plain browser**. You
+must inject a mock `window.__TAURI__` (an `core.invoke` switch + an
+`event.listen` registry) **before** the module scripts run, feed
+`rust/config.example.json` as the `get_config` reply, and serve
+`rust/web/` over a static HTTP server.
+
+Reproducible recipe (Linux dev host — Playwright + cached chromium,
+headless, no display needed):
+
+```bash
+# cached browser already at ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome
+cd /tmp && npm init -y && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm i playwright-core
+# drive.mjs: addInitScript injects the __TAURI__ mock, page.goto the static
+# server, then click #btn-activity, #btn-settings, every [data-tab], every
+# #pane-macros/#pane-settings button, each #chip-list .chip and controller
+# hotspot (opens .bind-popup-overlay), #btn-disconnect.
+```
+
+The IPC commands a mock must answer: `get_controller_status`,
+`get_config`, `get_ui_prefs`, `get_app_version` (others can return
+`null`). Events the frontend listens for: `controller-status`,
+`button-down/up`, `touchpad-click/hover`, `activity`,
+`config-changed`.
+
+What a PASS requires, captured as evidence:
+- Every toolbar / tab / pane button clicks without throwing.
+- Clicking a `#chip-list .chip` or a controller hotspot opens the
+  `.bind-popup-overlay` (Key/Macro/Mouse/Unbound + Cancel/Save).
+- `window` collects **zero** `error` / `unhandledrejection` /
+  `pageerror`. (A `GET /favicon.ico 404` is the one expected,
+  harmless miss.)
+- Screenshots of the main pane + an open bind popup.
+
+For scroll / layout bugs, measure don't eyeball: across several
+viewport widths assert `documentElement.scrollWidth == clientWidth`
+(no horizontal overflow) and read computed `overscroll-behavior-x`.
+The window is a fixed `100vh` shell (`.app { overflow: hidden }`) and
+`html, body { overscroll-behavior: none }` — nothing may rubber-band
+or scroll the window itself.
+
 ## Iron rules for the Rust source
 
 These are project-specific invariants. Breaking any of them silently
