@@ -1,6 +1,6 @@
 [package]
 name = "dualsense-mapper"
-version = "2.2.5"
+version = "2.3.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Map PS5 DualSense buttons and analog inputs to keyboard keys."
@@ -34,7 +34,7 @@ tauri = { version = "2", features = ["tray-icon", "image-ico", "devtools"], opti
 tauri-plugin-single-instance = { version = "2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Devices_Bluetooth"] }
 
 [features]
 default = []

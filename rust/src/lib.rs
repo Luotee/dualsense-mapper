@@ -7,5 +7,6 @@ pub mod keyboard;
 pub mod mouse;
 pub mod macro_engine;
 pub mod mapper;
+pub mod platform;
 pub mod safety;
 pub mod app;

@@ -3,6 +3,30 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-06-07
+
+### Added
+
+- **"Turn Off" button now actually powers the controller off (Windows).**
+  The old "Disconnect" button only dropped the host-side HID read handle
+  and returned the worker to Searching — the pad stayed powered and
+  paired, so it re-streamed on the next report and the button appeared to
+  do nothing. Root cause: the DualSense HID protocol has **no** power-off
+  command (verified against the nondebug/dualsense reference — output
+  reports only drive haptics, triggers, light bar, speaker, LEDs). The
+  PS5 console powers a pad off at the Bluetooth-link layer, not via HID.
+  The button now does the same: on Windows it drops the controller's
+  Bluetooth pairing via `BluetoothRemoveDevice` (`src/platform.rs`), and
+  the pad — having lost its bonded host — powers itself off. Relabelled
+  "Disconnect" → "Turn Off" with a tooltip noting the pad must be
+  re-paired to use it again.
+  - macOS: stubbed with a "Phase 2 TBD" error (IOBluetooth path not yet
+    wired) per the cross-platform rule; it fails loudly instead of
+    silently no-op'ing.
+  - USB: a bus-powered pad cannot be powered off in software; since this
+    app only ever streams the Bluetooth 0x31 report, a connected pad is
+    on Bluetooth by construction and matches the removal path.
+
 ## [2.2.5] - 2026-06-03
 
 ### Fixed
