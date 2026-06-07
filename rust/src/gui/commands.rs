@@ -488,12 +488,13 @@ pub fn set_capture_active(
 }
 
 /// Tauri command: turn the controller off. Signals the HID worker to drop
-/// its current device handle, then powers the pad off at the Bluetooth-link
+/// its current device handle, then disconnects the pad at the Bluetooth-link
 /// layer (`crate::platform::power_off_connected_dualsense`) — the DualSense
-/// HID protocol has no power-off command, so this drops the Bluetooth bond
-/// and the pad powers itself down. The worker thread stays alive and
-/// returns to Searching; the pad must be re-paired to reconnect. The
-/// frontend's "Turn Off" button in the toolbar invokes this.
+/// HID protocol has no power-off command, so this tears down the Bluetooth
+/// link (keeping the pairing) and the pad, having lost its host, powers
+/// itself down. The worker thread stays alive and returns to Searching;
+/// pressing PS reconnects the pad with no re-pairing. The frontend's
+/// "Turn Off" button in the toolbar invokes this.
 #[cfg(feature = "gui")]
 #[tauri::command]
 pub fn disconnect_gamepad(
