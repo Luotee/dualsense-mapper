@@ -494,6 +494,17 @@ fn worker_real(
                     d, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
                     &params, &stop, &disconnect_rx,
                 );
+                // The HID handle (`d`) was moved into read_loop and is now
+                // dropped, so Windows can cleanly drop the Bluetooth bond.
+                // A user-requested disconnect means "turn the pad off": the
+                // DualSense HID protocol has no power-off command, so power
+                // it off at the Bluetooth-link layer (see `crate::platform`).
+                if outcome == "manual-disconnect" {
+                    match crate::platform::power_off_connected_dualsense() {
+                        Ok(n) => tracing::info!(removed = n, "controller power-off requested"),
+                        Err(e) => tracing::warn!(error = %e, "controller power-off failed"),
+                    }
+                }
                 tracing::info!(?outcome, "read loop exited; back to Searching");
                 let _ = tx.send(GamepadEvent::Disconnected);
             }
