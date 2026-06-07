@@ -3,7 +3,28 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.3.0] - 2026-06-07
+## [2.3.1] - 2026-06-07
+
+### Fixed
+
+- **"Turn Off" no longer unpairs the controller.** v2.3.0 powered the pad
+  off by calling `BluetoothRemoveDevice`, which *removes the Bluetooth
+  pairing* — so after turning the pad off the user could not reconnect
+  without manually re-pairing it in Windows settings. That is far more
+  destructive than the PS5, which keeps the bond and just drops the link.
+  v2.3.1 replaces the unpair with a link-level disconnect: it sends
+  `IOCTL_BTH_DISCONNECT_DEVICE` (bthioctl.h) to the local Bluetooth radio
+  for each connected DualSense (`src/platform.rs`). The ACL link is torn
+  down — the pad, having lost its host, powers itself off — but the
+  pairing is kept, so pressing PS reconnects with no re-pairing, exactly
+  like the console. Tooltip updated accordingly.
+
+## [2.3.0] - 2026-06-07 [YANKED]
+
+> **Yanked:** the "Turn Off" button unpaired the controller
+> (`BluetoothRemoveDevice`), forcing a manual re-pair before the pad could
+> be used again. Superseded by 2.3.1, which disconnects the Bluetooth link
+> while keeping the pairing. The 2.3.0 tag and GitHub release were removed.
 
 ### Added
 

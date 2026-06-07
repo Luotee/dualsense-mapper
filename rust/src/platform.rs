@@ -9,16 +9,33 @@
 //! bonded host, then powers itself down.
 //!
 //! So "turn off the controller" from a PC means dropping the Bluetooth
-//! bond through the OS Bluetooth stack. On Windows that is
-//! `BluetoothRemoveDevice`, which unpairs the device; the DualSense reacts
-//! by powering off. The trade-off the user accepted is that the pad must
-//! be re-paired before it can be used again.
+//! *link* through the OS Bluetooth stack — **without** removing the
+//! pairing. The right primitive is the `IOCTL_BTH_DISCONNECT_DEVICE`
+//! control code (bthioctl.h) sent to the local Bluetooth radio: it tears
+//! down the ACL link to one remote device but leaves the bond intact, so
+//! the pad reconnects on the next PS-button press with no re-pairing. This
+//! mirrors what the PS5 console does.
 //!
-//! This is user-mode Bluetooth *device management* — not input synthesis,
-//! not a driver, not process hooking. It stays within iron rule #7.
+//! (v2.3.0 wrongly used `BluetoothRemoveDevice`, which *unpairs* the pad —
+//! far more destructive: the user had to re-pair every time. v2.3.1
+//! replaced it with the link-level disconnect below.)
+//!
+//! This is user-mode Bluetooth *connection management* — not input
+//! synthesis, not a driver, not process hooking. It stays within iron
+//! rule #7.
 
-/// Power off every currently-connected DualSense by dropping its Bluetooth
-/// pairing. Returns the number of controllers removed.
+/// `IOCTL_BTH_DISCONNECT_DEVICE` from bthioctl.h:
+/// `CTL_CODE(FILE_DEVICE_BLUETOOTH=0x41, function=0x03, METHOD_BUFFERED=0,
+/// FILE_ANY_ACCESS=0)` = `(0x41 << 16) | (0x03 << 2)` = `0x41000C`. Not
+/// re-exported by windows-sys, so defined here.
+#[cfg(target_os = "windows")]
+const IOCTL_BTH_DISCONNECT_DEVICE: u32 = 0x0041_000C;
+
+/// Disconnect every currently-connected DualSense at the Bluetooth-link
+/// layer, keeping each pad's pairing intact. The pad, having lost its host
+/// link, powers itself off; pressing PS reconnects it with no re-pairing.
+/// Returns the number of controllers a disconnect was successfully issued
+/// for.
 ///
 /// USB note: this app only ever streams the Bluetooth 0x31 report, so a
 /// connected pad is on Bluetooth by construction. A USB-only pad cannot be
@@ -27,14 +44,17 @@
 pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Devices::Bluetooth::{
-        BluetoothFindDeviceClose, BluetoothFindFirstDevice, BluetoothFindNextDevice,
-        BluetoothRemoveDevice, BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS,
+        BluetoothFindDeviceClose, BluetoothFindFirstDevice, BluetoothFindFirstRadio,
+        BluetoothFindNextDevice, BluetoothFindNextRadio, BluetoothFindRadioClose,
+        BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS, BLUETOOTH_FIND_RADIO_PARAMS,
     };
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::IO::DeviceIoControl;
 
     // SAFETY: every struct is zero-initialised then has its `dwSize` set
     // before the FFI call, exactly as the Win32 Bluetooth API requires.
     unsafe {
+        // ── 1. Collect the BTH_ADDR (u64) of every connected DualSense ──
         let mut params: BLUETOOTH_DEVICE_SEARCH_PARAMS = zeroed();
         params.dwSize = size_of::<BLUETOOTH_DEVICE_SEARCH_PARAMS>() as u32;
         params.fReturnAuthenticated = 1; // paired
@@ -49,32 +69,73 @@ pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
         info.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
 
         let find = BluetoothFindFirstDevice(&params, &mut info);
-        if find.is_null() {
-            // No remembered/connected Bluetooth devices at all.
+        let mut targets: Vec<u64> = Vec::new();
+        if !find.is_null() {
+            loop {
+                if info.fConnected != 0 && is_dualsense_name(&decode_name(&info.szName)) {
+                    // BLUETOOTH_ADDRESS is a union; ullLong is the 48-bit
+                    // device address packed into a u64 — the BTH_ADDR the
+                    // disconnect IOCTL expects.
+                    targets.push(info.Address.Anonymous.ullLong);
+                }
+                info = zeroed();
+                info.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
+                if BluetoothFindNextDevice(find, &mut info) == 0 {
+                    break;
+                }
+            }
+            BluetoothFindDeviceClose(find);
+        }
+
+        if targets.is_empty() {
             return Ok(0);
         }
 
-        let mut removed = 0usize;
-        loop {
-            if info.fConnected != 0 && is_dualsense_name(&decode_name(&info.szName)) {
-                let rc = BluetoothRemoveDevice(&info.Address);
-                if rc == ERROR_SUCCESS {
-                    removed += 1;
-                    tracing::info!("removed Bluetooth pairing for connected DualSense");
-                } else {
-                    tracing::warn!(rc, "BluetoothRemoveDevice failed");
+        // ── 2. Send IOCTL_BTH_DISCONNECT_DEVICE on each local radio ─────
+        // A device belongs to exactly one radio; issuing the IOCTL on the
+        // wrong radio just fails harmlessly, so we try every radio and
+        // count an address as done on its first success.
+        let mut done = std::collections::HashSet::new();
+        let mut rparams: BLUETOOTH_FIND_RADIO_PARAMS = zeroed();
+        rparams.dwSize = size_of::<BLUETOOTH_FIND_RADIO_PARAMS>() as u32;
+        let mut radio: HANDLE = std::ptr::null_mut();
+        let rfind = BluetoothFindFirstRadio(&rparams, &mut radio);
+        if !rfind.is_null() {
+            loop {
+                for &addr in &targets {
+                    let mut returned = 0u32;
+                    let ok = DeviceIoControl(
+                        radio,
+                        IOCTL_BTH_DISCONNECT_DEVICE,
+                        &addr as *const u64 as *const core::ffi::c_void,
+                        size_of::<u64>() as u32,
+                        std::ptr::null_mut(),
+                        0,
+                        &mut returned,
+                        std::ptr::null_mut(),
+                    );
+                    if ok != 0 {
+                        done.insert(addr);
+                        tracing::info!("disconnected DualSense Bluetooth link (pairing kept)");
+                    }
+                }
+                CloseHandle(radio);
+                radio = std::ptr::null_mut();
+                if BluetoothFindNextRadio(rfind, &mut radio) == 0 {
+                    break;
                 }
             }
-
-            info = zeroed();
-            info.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
-            if BluetoothFindNextDevice(find, &mut info) == 0 {
-                break;
-            }
+            BluetoothFindRadioClose(rfind);
         }
 
-        BluetoothFindDeviceClose(find);
-        Ok(removed)
+        if done.len() < targets.len() {
+            tracing::warn!(
+                wanted = targets.len(),
+                done = done.len(),
+                "some DualSense links could not be disconnected"
+            );
+        }
+        Ok(done.len())
     }
 }
 
