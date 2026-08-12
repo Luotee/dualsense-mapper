@@ -2,7 +2,7 @@
 
 [English](README.md) | **繁體中文**
 
-把 PS5 DualSense 控制器映射成鍵盤按鍵，讓筆電也能用手把玩。2025 年 5 月最初用 Python 寫成，為了讓我太太在 MacBook 上舒服地玩《新楓之谷 Worlds》Artale；後來用 Rust 重寫，打包成單一個 Windows 執行檔。
+把 PS5 DualSense 控制器映射成鍵盤按鍵，讓筆電也能用手把玩。2025 年 5 月最初用 Python 寫成，為了讓我太太在 MacBook 上舒服地玩Maplestory Worlds Artale；後來用 Rust 重寫，打包成單一個 Windows 執行檔。
 
 <p align="center">
   <img src="docs/images/main-window.png" width="820"
