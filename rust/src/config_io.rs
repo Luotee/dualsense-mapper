@@ -111,6 +111,14 @@ impl ConfigDoc {
         self.raw["touchpad_click_freeze_enabled"] = Value::from(v);
     }
 
+    pub fn set_mapping_enabled(&mut self, kind: crate::gamepad::ControllerKind, enabled: bool) {
+        self.typed.mapping_enabled.insert(kind.slug().to_string(), enabled);
+        if !self.raw["mapping_enabled"].is_object() {
+            self.raw["mapping_enabled"] = serde_json::json!({});
+        }
+        self.raw["mapping_enabled"][kind.slug()] = Value::Bool(enabled);
+    }
+
     /// Set min_press_ms without running validation.
     /// Callers that need the invariant enforced must call `validate()` afterwards.
     pub fn set_min_press_ms_unchecked(&mut self, v: [u32; 2]) {

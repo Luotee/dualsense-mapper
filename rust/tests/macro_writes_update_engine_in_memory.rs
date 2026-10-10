@@ -40,6 +40,7 @@ fn baseline_config() -> Config {
         touchpad_accel_gain_fast: 1.5,
         touchpad_deadzone_radius: 2,
         touchpad_click_freeze_enabled: true,
+        mapping_enabled: Default::default(),
     }
 }
 

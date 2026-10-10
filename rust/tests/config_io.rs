@@ -95,3 +95,21 @@ fn invalid_payload_fails_validation_and_does_not_touch_disk() {
     let on_disk = std::fs::read_to_string(tmp.path()).unwrap();
     assert_eq!(on_disk.trim(), FIXTURE.trim(), "disk untouched on validation failure");
 }
+
+#[test]
+fn set_mapping_enabled_preserves_help() {
+    use dualsense_mapper::gamepad::ControllerKind;
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
+    let orig: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&example).unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.json");
+    std::fs::copy(&example, &path).unwrap();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.set_mapping_enabled(ControllerKind::DualSense, false);
+    write_atomic(&path, &doc).unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(raw["mapping_enabled"]["dualsense"], false);
+    assert_eq!(raw["_help"], orig["_help"]);
+}
