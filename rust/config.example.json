@@ -62,7 +62,8 @@
     "25": { "label": "Touchpad TL",              "type": "mouse",   "value": "left" },
     "26": { "label": "Touchpad TR",              "type": "mouse",   "value": "left" },
     "27": { "label": "Touchpad BL",              "type": "mouse",   "value": "left" },
-    "28": { "label": "Touchpad BR",              "type": "mouse",   "value": "left" }
+    "28": { "label": "Touchpad BR",              "type": "mouse",   "value": "left" },
+    "29": { "label": "Capture（Switch 擷取鍵）",   "type": "unbound" }
   },
   "touchpad_cursor_enabled": true,
   "touchpad_cursor_sensitivity": 1.5,

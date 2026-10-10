@@ -98,17 +98,19 @@ pub enum StepAction {
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::Path;
 
-pub const VALID_BUTTON_IDS: std::ops::RangeInclusive<u32> = 0..=28;
+pub const VALID_BUTTON_IDS: std::ops::RangeInclusive<u32> = 0..=29;
 
-/// Button ids added in v2.1.0 for the four touchpad quadrants. Missing
+/// Button ids added after v2.0, with the label given to an auto-filled entry:
+/// 25..=28 the touchpad quadrants (v2.1.0), 29 Capture (v2.5.0). Missing
 /// entries in a loaded config are auto-filled as `Unbound` before
-/// validation so v2.0 configs continue to load.
-pub const TOUCHPAD_QUADRANT_IDS: [u32; 4] = [25, 26, 27, 28];
-const TOUCHPAD_QUADRANT_LABELS: [&str; 4] = [
-    "Touchpad TL",
-    "Touchpad TR",
-    "Touchpad BL",
-    "Touchpad BR",
+/// validation so older configs continue to load. Auto-fill happens on the
+/// load paths, never inside `validate` (iron rule 1).
+pub const ADDED_IDS: &[(u32, &str)] = &[
+    (25, "Touchpad TL"),
+    (26, "Touchpad TR"),
+    (27, "Touchpad BL"),
+    (28, "Touchpad BR"),
+    (29, "Capture（Switch 擷取鍵）"),
 ];
 
 impl Config {
@@ -117,7 +119,7 @@ impl Config {
             .with_context(|| format!("reading config: {}", path.display()))?;
         let mut cfg: Config = serde_json::from_str(&text)
             .with_context(|| format!("parsing config: {}", path.display()))?;
-        cfg.fill_touchpad_defaults();
+        cfg.fill_added_id_defaults();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -125,16 +127,16 @@ impl Config {
     pub fn load_from_str(s: &str) -> Result<Self> {
         let mut cfg: Config = serde_json::from_str(s)
             .context("parsing config from string")?;
-        cfg.fill_touchpad_defaults();
+        cfg.fill_added_id_defaults();
         cfg.validate()?;
         Ok(cfg)
     }
 
-    /// Insert default `Unbound` entries for any of the touchpad-quadrant
-    /// ids (25..=28) missing from `buttons`. Called on load so that v2.0
-    /// configs (which never had these ids) parse and validate cleanly.
-    pub fn fill_touchpad_defaults(&mut self) {
-        for (id, label) in TOUCHPAD_QUADRANT_IDS.iter().zip(TOUCHPAD_QUADRANT_LABELS.iter()) {
+    /// Insert default `Unbound` entries for any `ADDED_IDS` id missing from
+    /// `buttons`. Called on load so that older configs (which never had
+    /// these ids) parse and validate cleanly.
+    pub fn fill_added_id_defaults(&mut self) {
+        for (id, label) in ADDED_IDS {
             let key = id.to_string();
             self.buttons.entry(key).or_insert_with(|| ButtonEntry {
                 label: (*label).to_string(),
@@ -211,14 +213,14 @@ impl Config {
         for id in VALID_BUTTON_IDS {
             let key = id.to_string();
             if !self.buttons.contains_key(&key) {
-                bail!("missing button id {id}; config must list all ids 0..=28");
+                bail!("missing button id {id}; config must list all ids 0..=29");
             }
         }
         for k in self.buttons.keys() {
             let id: u32 = k.parse()
-                .map_err(|_| anyhow!("unknown button id {k}; ids must be numeric 0..=28"))?;
+                .map_err(|_| anyhow!("unknown button id {k}; ids must be numeric 0..=29"))?;
             if !VALID_BUTTON_IDS.contains(&id) {
-                bail!("unknown button id {id}; allowed range is 0..=28");
+                bail!("unknown button id {id}; allowed range is 0..=29");
             }
         }
         for (id, entry) in &self.buttons {
@@ -579,7 +581,7 @@ mod tests {
         let cfg = Config::load_from_str(&s).expect("v2.0-style config must load");
         assert!(cfg.touchpad_cursor_enabled);
         assert!((cfg.touchpad_cursor_sensitivity - 1.5).abs() < 1e-6);
-        for id in TOUCHPAD_QUADRANT_IDS {
+        for (id, _) in ADDED_IDS {
             assert!(cfg.buttons.contains_key(&id.to_string()),
                 "touchpad id {id} must be auto-filled");
         }
@@ -590,7 +592,7 @@ mod tests {
         let cfg = sample_full_config_v20();
         let s = serde_json::to_string(&cfg).unwrap();
         let loaded = Config::load_from_str(&s).expect("v2.0 config must load via auto-fill");
-        for id in TOUCHPAD_QUADRANT_IDS {
+        for (id, _) in ADDED_IDS {
             match &loaded.buttons[&id.to_string()].binding {
                 Binding::Unbound => {}
                 other => panic!("auto-filled id {id} should be Unbound, got {other:?}"),

@@ -17,6 +17,11 @@ const DUALSENSE_CAPS: [u32; 29] = [
     26, 27, 28,
 ];
 
+/// Switch Pro: 0..=24 (no touchpad quadrants 25..=28) plus 29 (Capture).
+const NS_PRO_CAPS: [u32; 26] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 29,
+];
+
 impl ControllerKind {
     pub const ALL: [ControllerKind; 3] = [
         ControllerKind::DualSense,
@@ -47,8 +52,9 @@ impl ControllerKind {
     pub fn capabilities(self) -> &'static [u32] {
         match self {
             ControllerKind::DualSense => &DUALSENSE_CAPS,
-            // Filled in by PR 2 (NsPro) / PR 3 (Ns2Pro).
-            ControllerKind::NsPro | ControllerKind::Ns2Pro => &[],
+            ControllerKind::NsPro => &NS_PRO_CAPS,
+            // Filled in by PR 3.
+            ControllerKind::Ns2Pro => &[],
         }
     }
 
@@ -85,6 +91,14 @@ mod tests {
         assert!(!ControllerKind::DualSense.needs_virtual_pad());
         assert!(!ControllerKind::NsPro.needs_virtual_pad());
         assert!(ControllerKind::Ns2Pro.needs_virtual_pad());
+    }
+
+    #[test]
+    fn ns_pro_capabilities() {
+        let mut want: Vec<u32> = (0..=24).collect();
+        want.push(29);
+        assert_eq!(ControllerKind::NsPro.capabilities(), want);
+        assert_eq!(ControllerKind::NsPro.capabilities().len(), 26);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! round-trip of `_help`, `_keyboard_keys`, and any future "_*" doc fields.
 //! We carry both.
 
-use crate::config::{Binding, ButtonEntry, Config, MacroDef, TOUCHPAD_QUADRANT_IDS};
+use crate::config::{Binding, ButtonEntry, Config, MacroDef, ADDED_IDS};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -159,12 +159,11 @@ impl ConfigDoc {
 /// filesystem if validation fails.  Otherwise writes to a sibling `.tmp`
 /// file and renames it into place so readers never see a partial write.
 /// Migrate v2.0 → v2.1 by inserting missing touchpad quadrant ids
-/// (25..=28) as `Unbound` into both the typed and the raw JSON view.
+/// (`ADDED_IDS`: 25..=29) as `Unbound` into both the typed and the raw JSON view.
 /// The raw patch keeps the next `write_atomic` round-trip honest.
 fn migrate_touchpad_ids(typed: &mut Config, raw: &mut Value) {
-    typed.fill_touchpad_defaults();
-    let labels = ["Touchpad TL", "Touchpad TR", "Touchpad BL", "Touchpad BR"];
-    for (id, label) in TOUCHPAD_QUADRANT_IDS.iter().zip(labels.iter()) {
+    typed.fill_added_id_defaults();
+    for (id, label) in ADDED_IDS {
         let key = id.to_string();
         if raw["buttons"][&key].is_null() {
             raw["buttons"][&key] = serde_json::to_value(&ButtonEntry {
