@@ -2,11 +2,11 @@
 //! (DualSense 0x31, Switch Pro, ...). Diffing two of these yields the
 //! `GamepadEvent` stream.
 
-/// Number of button slots in a pad snapshot (ids `0..=29`).
-pub const BUTTON_SLOTS: usize = 30;
+/// Number of button slots in a pad snapshot (ids `0..=32`).
+pub const BUTTON_SLOTS: usize = 33;
 
 /// Decoded snapshot of a single input frame.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PadState {
     pub stick_lx: f32,
     pub stick_ly: f32,
@@ -25,4 +25,24 @@ pub struct PadState {
     pub finger0_y: u16,
     /// Whole-touchpad physical click switch.
     pub touchpad_btn: bool,
+}
+
+// Hand-written: std only derives `Default` for arrays up to 32 elements and
+// `BUTTON_SLOTS` is 33.
+impl Default for PadState {
+    fn default() -> Self {
+        PadState {
+            stick_lx: 0.0,
+            stick_ly: 0.0,
+            stick_rx: 0.0,
+            stick_ry: 0.0,
+            trigger_l2: 0.0,
+            trigger_r2: 0.0,
+            buttons: [false; BUTTON_SLOTS],
+            finger0_active: false,
+            finger0_x: 0,
+            finger0_y: 0,
+            touchpad_btn: false,
+        }
+    }
 }

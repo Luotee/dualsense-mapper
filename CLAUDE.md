@@ -46,7 +46,7 @@ not stage these files; do not bypass the ignore with `git add -f`.
 ```bash
 sudo apt install -y pkg-config libudev-dev   # gilrs Linux backend deps
 cd rust
-cargo test                                    # 188 tests, ~4s
+cargo test                                    # 192 tests, ~4s
 cargo build --release                         # native Linux binary
 ```
 

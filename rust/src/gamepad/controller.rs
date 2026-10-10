@@ -22,6 +22,12 @@ const NS_PRO_CAPS: [u32; 26] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 29,
 ];
 
+/// Switch 2 Pro: 0..=24 plus 29 (Capture) and 30..=32 (GL / GR / C).
+const NS2_PRO_CAPS: [u32; 29] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 29,
+    30, 31, 32,
+];
+
 impl ControllerKind {
     pub const ALL: [ControllerKind; 3] = [
         ControllerKind::DualSense,
@@ -53,8 +59,7 @@ impl ControllerKind {
         match self {
             ControllerKind::DualSense => &DUALSENSE_CAPS,
             ControllerKind::NsPro => &NS_PRO_CAPS,
-            // Filled in by PR 3.
-            ControllerKind::Ns2Pro => &[],
+            ControllerKind::Ns2Pro => &NS2_PRO_CAPS,
         }
     }
 
@@ -99,6 +104,14 @@ mod tests {
         want.push(29);
         assert_eq!(ControllerKind::NsPro.capabilities(), want);
         assert_eq!(ControllerKind::NsPro.capabilities().len(), 26);
+    }
+
+    #[test]
+    fn ns2_capabilities() {
+        let mut want: Vec<u32> = (0..=24).collect();
+        want.extend(29..=32);
+        assert_eq!(ControllerKind::Ns2Pro.capabilities(), want);
+        assert_eq!(ControllerKind::Ns2Pro.capabilities().len(), 29);
     }
 
     #[test]
