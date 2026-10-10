@@ -30,6 +30,9 @@ anyhow = "1"
 thiserror = "1"
 crossbeam-channel = "0.5"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+# Switch 2 Pro BLE pairing crypto (gamepad/ns2_protocol.rs): AES-128-ECB + random A1/A2.
+aes = "0.8"
+rand = "0.8"
 tauri = { version = "2", features = ["tray-icon", "image-ico", "devtools"], optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 
