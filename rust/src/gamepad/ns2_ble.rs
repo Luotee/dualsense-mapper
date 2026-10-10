@@ -5,7 +5,9 @@
 //! Scanning → Connecting → Initializing → Streaming, and back to Scanning
 //! on any failure, lost link or manual disconnect. A scan with no matching
 //! advert is restarted every 30 s, because btleplug never reports a WinRT
-//! watcher that Windows aborted (Bluetooth off/on, sleep/wake). The hardware-proven
+//! watcher that Windows aborted (Bluetooth off/on, sleep/wake). While the
+//! suspend flag is set (another controller owns the session, see
+//! `super::hub`) the worker neither scans nor connects. The hardware-proven
 //! connect sequence (spec §12) is: `connect()`, *immediately*
 //! `request_connection_parameters(ThroughputOptimized)`, 500 ms pause,
 //! `discover_services()`, response notify, optional `0x15` pairing,
@@ -41,6 +43,10 @@ const FIRST_UNLIMITED_BUILD: u32 = 22000;
 
 /// A scan with no matching advert for this long is stopped and restarted.
 pub(crate) const SCAN_RESTART_AFTER: Duration = Duration::from_secs(30);
+
+/// While suspended, the worker re-checks the suspend flag this often.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const SUSPEND_POLL: Duration = Duration::from_millis(200);
 
 /// Turn Off, exactly as hardware-proven (spike round 2): after the 06/02
 /// write, wait up to this long for a response (none is expected) ...
@@ -106,6 +112,8 @@ pub(crate) enum SessionEnd {
     Stopped,
     /// A scan saw no matching advert for `SCAN_RESTART_AFTER`.
     ScanRestart,
+    /// The scan stopped because another source owns the session.
+    Suspended,
 }
 
 /// True once a scan started at `started` should be stopped and started
@@ -113,6 +121,30 @@ pub(crate) enum SessionEnd {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn scan_should_restart(started: Instant, now: Instant) -> bool {
     now.saturating_duration_since(started) >= SCAN_RESTART_AFTER
+}
+
+/// What a running scan does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ScanStep {
+    /// Keep listening for adverts.
+    Listen,
+    /// Stop and start the watcher again (`scan_should_restart`).
+    Restart,
+    /// Stop scanning: another source owns the session.
+    Suspend,
+}
+
+/// The scan decision for a scan started at `started`. Suspension wins.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn scan_step(suspended: bool, started: Instant, now: Instant) -> ScanStep {
+    if suspended {
+        ScanStep::Suspend
+    } else if scan_should_restart(started, now) {
+        ScanStep::Restart
+    } else {
+        ScanStep::Listen
+    }
 }
 
 /// Pause before scanning again. Never zero after a failure, so a pad that
@@ -125,7 +157,8 @@ pub(crate) fn rescan_delay(end: SessionEnd) -> Duration {
         // Long enough that the pad we just turned off is asleep before we
         // look again (it may still advertise for a moment).
         SessionEnd::TurnedOff => Duration::from_secs(3),
-        SessionEnd::Stopped | SessionEnd::ScanRestart => Duration::ZERO,
+        // Suspended: the worker idles until resumed, then scans at once.
+        SessionEnd::Stopped | SessionEnd::ScanRestart | SessionEnd::Suspended => Duration::ZERO,
     }
 }
 
@@ -242,6 +275,7 @@ impl InputStream {
 pub struct Ns2BleSource {
     rx: Receiver<GamepadEvent>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    suspend: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(windows)]
@@ -256,17 +290,32 @@ impl Ns2BleSource {
         use std::sync::Arc;
         let (tx, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(AtomicBool::new(false));
-        let ctx = imp::Ctx { tx, stop: stop.clone(), disconnect_rx, warn_tx, build: None };
+        let suspend = Arc::new(AtomicBool::new(false));
+        let ctx = imp::Ctx {
+            tx,
+            stop: stop.clone(),
+            suspend: suspend.clone(),
+            disconnect_rx,
+            warn_tx,
+            build: None,
+        };
         std::thread::Builder::new()
             .name("ns2-ble".into())
             .spawn(move || imp::run(ctx))
             .map_err(|e| anyhow::anyhow!("spawning NS2 BLE worker thread: {e}"))?;
-        Ok(Self { rx, stop })
+        Ok(Self { rx, stop, suspend })
     }
 
     /// Drain pending events into `out`. Non-blocking.
     pub fn poll(&mut self, out: &mut Vec<GamepadEvent>) {
         out.extend(self.rx.try_iter());
+    }
+
+    /// While set, the worker neither scans nor connects (a pad already
+    /// streaming is not affected). Set by `SourceHub` while another source
+    /// owns the session.
+    pub fn suspend_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.suspend.clone()
     }
 }
 
@@ -323,6 +372,7 @@ mod imp {
     pub(super) struct Ctx {
         pub(super) tx: Sender<GamepadEvent>,
         pub(super) stop: Arc<AtomicBool>,
+        pub(super) suspend: Arc<AtomicBool>,
         pub(super) disconnect_rx: Receiver<()>,
         pub(super) warn_tx: Sender<String>,
         /// Windows build, read once at thread start.
@@ -335,6 +385,10 @@ mod imp {
     impl Ctx {
         fn stopped(&self) -> bool {
             self.stop.load(Ordering::SeqCst)
+        }
+
+        fn suspended(&self) -> bool {
+            self.suspend.load(Ordering::SeqCst)
         }
 
         /// An NS2 Pro just connected: warn if this Windows rate-limits BLE.
@@ -419,6 +473,11 @@ mod imp {
         // dropping) are logged once, then at debug level.
         let mut last_err = String::new();
         while !ctx.stopped() {
+            if ctx.suspended() {
+                // Another controller owns the session: leave the radio alone.
+                pause(ctx, SUSPEND_POLL).await;
+                continue;
+            }
             if ble.is_none() {
                 match open_ble().await {
                     Ok(b) => ble = Some(b),
@@ -509,6 +568,10 @@ mod imp {
         let (p, m) = match scan(ctx, ble).await.map_err(|err| Fault { adapter: true, err })? {
             Scan::Found(p, m) => (p, m),
             Scan::Stopped => return Ok(SessionEnd::Stopped),
+            Scan::Suspended => {
+                tracing::debug!("NS2 BLE: another controller owns the session; scan suspended");
+                return Ok(SessionEnd::Suspended);
+            }
             Scan::Restart => {
                 tracing::debug!("NS2 BLE: no advert for {SCAN_RESTART_AFTER:?}; restarting the scan");
                 return Ok(SessionEnd::ScanRestart);
@@ -545,9 +608,12 @@ mod imp {
         Stopped,
         /// `SCAN_RESTART_AFTER` without a matching advert.
         Restart,
+        /// The suspend flag was set (checked again after a match, so a
+        /// pad found in the same instant is not connected).
+        Suspended,
     }
 
-    /// One bounded scan: until an acceptable advert, a stop, or
+    /// One bounded scan: until an acceptable advert, a stop, a suspend, or
     /// `SCAN_RESTART_AFTER`. The watcher is always stopped on exit, so a
     /// restart is a fresh `start_scan` (btleplug never surfaces a watcher
     /// that WinRT aborted on Bluetooth off/on or sleep/wake).
@@ -566,8 +632,10 @@ mod imp {
             if ctx.stopped() {
                 return Ok(Scan::Stopped);
             }
-            if scan_should_restart(started, Instant::now()) {
-                return Ok(Scan::Restart);
+            match scan_step(ctx.suspended(), started, Instant::now()) {
+                ScanStep::Listen => {}
+                ScanStep::Restart => return Ok(Scan::Restart),
+                ScanStep::Suspend => return Ok(Scan::Suspended),
             }
             ctx.drain_disconnects();
             let ev = match tokio::time::timeout(TICK, ble.events.next()).await {
@@ -577,6 +645,9 @@ mod imp {
             };
             if let CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } = ev {
                 if let Some(m) = accept_advert(&manufacturer_data, ble.local) {
+                    if ctx.suspended() {
+                        return Ok(Scan::Suspended);
+                    }
                     let p = ble.adapter.peripheral(&id).await.context("peripheral lookup")?;
                     return Ok(Scan::Found(p, m));
                 }
@@ -818,16 +889,22 @@ mod imp {
 #[cfg(not(windows))]
 pub struct Ns2BleSource {
     disconnect_rx: Receiver<()>,
+    suspend: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(not(windows))]
 impl Ns2BleSource {
     pub fn new(disconnect_rx: Receiver<()>, _warn_tx: Sender<String>) -> anyhow::Result<Self> {
-        Ok(Self { disconnect_rx })
+        Ok(Self { disconnect_rx, suspend: Default::default() })
     }
 
     pub fn poll(&mut self, _out: &mut Vec<GamepadEvent>) {
         while self.disconnect_rx.try_recv().is_ok() {}
+    }
+
+    /// Stored only; the stub never scans.
+    pub fn suspend_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.suspend.clone()
     }
 }
 
@@ -922,6 +999,25 @@ mod tests {
         assert!(!scan_should_restart(t0, t0 + Duration::from_millis(29_999)));
         assert!(scan_should_restart(t0, t0 + Duration::from_secs(30)));
         assert!(scan_should_restart(t0, t0 + Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn scan_step_suspend_wins_over_restart() {
+        let t0 = Instant::now();
+        let late = t0 + SCAN_RESTART_AFTER;
+        assert_eq!(scan_step(false, t0, t0), ScanStep::Listen);
+        assert_eq!(scan_step(false, t0, late), ScanStep::Restart);
+        // Another source owns the session: stop scanning at once.
+        assert_eq!(scan_step(true, t0, t0), ScanStep::Suspend);
+        assert_eq!(scan_step(true, t0, late), ScanStep::Suspend);
+    }
+
+    #[test]
+    fn suspended_scan_resumes_without_pause() {
+        // The worker idles in SUSPEND_POLL steps until resumed; once
+        // resumed it scans again at once.
+        assert_eq!(SUSPEND_POLL, Duration::from_millis(200));
+        assert_eq!(rescan_delay(SessionEnd::Suspended), Duration::ZERO);
     }
 
     #[test]
@@ -1022,6 +1118,18 @@ mod tests {
         assert!(out.is_empty(), "stub emitted {out:?}");
         assert!(wrx.try_recv().is_err(), "stub sends no warnings");
         assert!(dtx.is_empty(), "stub drains manual disconnect signals");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn stub_suspend_flag_is_shared() {
+        let (_dtx, drx) = unbounded::<()>();
+        let (wtx, _wrx) = unbounded::<String>();
+        let src = Ns2BleSource::new(drx, wtx).unwrap();
+        let flag = src.suspend_flag();
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst), "not suspended at start");
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(src.suspend_flag().load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

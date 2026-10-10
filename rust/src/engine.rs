@@ -103,9 +103,15 @@ struct HandleInner {
     /// effect on the next decoded frame without rebuilding the engine.
     cursor_params: CursorParams,
     /// Manual disconnect signal — Tauri `disconnect_gamepad` IPC sends
-    /// through this. HID worker honors it to release the hidapi device
-    /// handle and return to Searching state without exiting the thread.
+    /// through this. The gamepad source forwards it to the worker that owns
+    /// the session, which turns its pad off and goes back to searching
+    /// without exiting the thread.
     disconnect_signal: crossbeam_channel::Sender<()>,
+    /// Status warnings from the gamepad workers (e.g. the NS2 BLE worker's
+    /// `ble_rate_limited_win10`). Not read yet: `ControllerStatus.warnings`
+    /// is wired to it in a follow-up.
+    #[allow(dead_code)]
+    warn_rx: Receiver<String>,
 }
 
 // ─── Handle (GUI-side) ───────────────────────────────────────────────────────
@@ -205,10 +211,11 @@ impl Handle {
         }
     }
 
-    /// Manual disconnect — send a signal to the HID worker to drop its
-    /// current device handle and return to Searching. The thread does
-    /// NOT exit; a new controller (the same or different) reconnects
-    /// via the normal handshake path on next button press.
+    /// Manual disconnect — the gamepad source forwards it to the worker
+    /// that owns the session (none connected: ignored), which drops its
+    /// device and returns to searching. The thread does NOT exit; a new
+    /// controller (the same or different) reconnects via the normal
+    /// handshake path on next button press.
     pub fn disconnect_current_device(&self) {
         let _ = self.inner.disconnect_signal.send(());
     }
@@ -231,8 +238,10 @@ impl Engine {
             cfg.touchpad_midpoint_y,
         );
         let (disconnect_tx, disconnect_rx) = crossbeam_channel::bounded::<()>(4);
-        let src = GamepadSource::new(cursor_params.clone(), disconnect_rx)?;
-        Self::spawn_inner(cfg, dry_run, src, cursor_params, disconnect_tx)
+        // Bounded: workers `try_send`, and each warning is sent at most once.
+        let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
+        let src = GamepadSource::new(cursor_params.clone(), disconnect_rx, warn_tx)?;
+        Self::spawn_inner(cfg, dry_run, src, cursor_params, disconnect_tx, warn_rx)
     }
 
     /// Spawn with a fake gamepad source. Events are injected via
@@ -249,7 +258,10 @@ impl Engine {
         let (fake_tx, fake_rx) = unbounded::<crate::gamepad::GamepadEvent>();
         let src = GamepadSource::fake(fake_rx);
         let (disconnect_tx, _disconnect_rx) = crossbeam_channel::bounded::<()>(4);
-        let engine = Self::spawn_inner(cfg, /*dry_run=*/true, src, cursor_params, disconnect_tx)?;
+        let (_warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
+        let engine = Self::spawn_inner(
+            cfg, /*dry_run=*/true, src, cursor_params, disconnect_tx, warn_rx,
+        )?;
         // Install the sender into HandleInner.
         *engine.handle.inner.fake_tx.lock().unwrap() = Some(fake_tx);
         Ok(engine)
@@ -261,6 +273,7 @@ impl Engine {
         src: GamepadSource,
         cursor_params: CursorParams,
         disconnect_tx: crossbeam_channel::Sender<()>,
+        warn_rx: Receiver<String>,
     ) -> Result<Self> {
         let key_state = safety::shared();
         let (event_tx, event_rx) = unbounded::<EngineEvent>();
@@ -278,6 +291,7 @@ impl Engine {
             current_status: RwLock::new(None),
             cursor_params,
             disconnect_signal: disconnect_tx,
+            warn_rx,
         });
 
         let handle = Handle { inner: inner.clone() };

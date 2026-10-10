@@ -276,7 +276,12 @@ fn list_buttons(cfg: Option<Config>) -> Result<()> {
     };
 
     let (_dummy_disconnect_tx, dummy_disconnect_rx) = crossbeam_channel::bounded::<()>(4);
-    let mut source = GamepadSource::new(dualsense_mapper::gamepad::CursorParams::default(), dummy_disconnect_rx)?;
+    let (warn_tx, _warn_rx) = crossbeam_channel::bounded::<String>(8);
+    let mut source = GamepadSource::new(
+        dualsense_mapper::gamepad::CursorParams::default(),
+        dummy_disconnect_rx,
+        warn_tx,
+    )?;
     println!("Press a button or move a stick. Ctrl-C to quit.");
 
     let shutdown = Arc::new(AtomicBool::new(false));
