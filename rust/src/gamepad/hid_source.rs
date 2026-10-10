@@ -16,7 +16,7 @@ use super::cursor_params::CursorParams;
 use super::ds_protocol::{build_handshake_buffer, decode_31, REPORT_LEN_BT};
 use super::ns_handshake::{ns_handshake_counted, send_input_mode_full, send_turn_off};
 use super::ns_protocol::{decode_30, StickCal};
-use super::pad::{PadState, BUTTON_SLOTS};
+use super::pad::{emit_pad_diff, PadState, BUTTON_SLOTS};
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
 use anyhow::{anyhow, Context, Result};
@@ -755,7 +755,7 @@ fn handle_frame(
         let _ = tx.send(GamepadEvent::Connected(session.kind));
         *emitted_connected = true;
     }
-    diff_emit(last_state.as_ref(), &s, prev_buttons, tx);
+    emit_pad_diff(last_state.as_ref(), &s, prev_buttons, tx);
     if session.kind == ControllerKind::DualSense {
         process_touchpad(touchpad, &s, params, tx);
     }
@@ -823,43 +823,6 @@ fn worker_byte_stream(
             }
         }
     }
-}
-
-fn diff_emit(
-    prev: Option<&PadState>,
-    cur: &PadState,
-    prev_buttons: &mut [bool; BUTTON_SLOTS],
-    tx: &Sender<GamepadEvent>,
-) {
-    if prev.map_or(true, |p| p.stick_lx != cur.stick_lx) {
-        let _ = tx.send(GamepadEvent::Stick { axis: 0, value: cur.stick_lx });
-    }
-    if prev.map_or(true, |p| p.stick_ly != cur.stick_ly) {
-        let _ = tx.send(GamepadEvent::Stick { axis: 1, value: cur.stick_ly });
-    }
-    if prev.map_or(true, |p| p.stick_rx != cur.stick_rx) {
-        let _ = tx.send(GamepadEvent::Stick { axis: 2, value: cur.stick_rx });
-    }
-    if prev.map_or(true, |p| p.stick_ry != cur.stick_ry) {
-        let _ = tx.send(GamepadEvent::Stick { axis: 3, value: cur.stick_ry });
-    }
-    if prev.map_or(true, |p| p.trigger_l2 != cur.trigger_l2) {
-        let _ = tx.send(GamepadEvent::Trigger { axis: 4, value: cur.trigger_l2 });
-    }
-    if prev.map_or(true, |p| p.trigger_r2 != cur.trigger_r2) {
-        let _ = tx.send(GamepadEvent::Trigger { axis: 5, value: cur.trigger_r2 });
-    }
-    for (i, &down) in cur.buttons.iter().enumerate() {
-        if down != prev_buttons[i] {
-            let id = i as u32;
-            let _ = tx.send(if down {
-                GamepadEvent::ButtonDown(id)
-            } else {
-                GamepadEvent::ButtonUp(id)
-            });
-        }
-    }
-    prev_buttons.copy_from_slice(&cur.buttons);
 }
 
 #[cfg(test)]
