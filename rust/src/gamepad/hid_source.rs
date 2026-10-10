@@ -1,17 +1,22 @@
-//! DualSense BT raw HID source.
+//! Raw Bluetooth HID source (DualSense 0x31, Switch Pro 0x30).
 //!
 //! Spawns a worker thread that owns the hidapi `HidDevice`, drives the
-//! `Searching → Handshaking → Streaming` state machine, decodes 78-byte
-//! 0x31 reports, diffs against the previous snapshot, and pushes
-//! `GamepadEvent`s to a channel the engine drains via `poll()`.
+//! `Searching → Handshaking → Streaming` state machine, decodes each
+//! report with the connected kind's decoder, diffs against the previous
+//! snapshot, and pushes `GamepadEvent`s to a channel the engine drains
+//! via `poll()`.
 //!
-//! Three constructors:
+//! Constructors:
 //! - `new()`             — production hidapi worker
 //! - `fake(rx)`          — direct GamepadEvent injection (engine tests)
-//! - `new_from_byte_stream(rx)` — raw 78-byte injection (state-machine tests)
+//! - `new_from_byte_stream(rx)` / `new_from_byte_stream_for(kind, rx)` —
+//!   raw report injection (state-machine tests)
 
 use super::cursor_params::CursorParams;
-use super::ds_protocol::{build_handshake_buffer, decode_31, DsState, REPORT_LEN_BT};
+use super::ds_protocol::{build_handshake_buffer, decode_31, REPORT_LEN_BT};
+use super::ns_handshake::{ns_handshake_counted, send_input_mode_full, send_turn_off};
+use super::ns_protocol::{decode_30, StickCal};
+use super::pad::{PadState, BUTTON_SLOTS};
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
 use anyhow::{anyhow, Context, Result};
@@ -29,9 +34,9 @@ use std::time::{Duration, Instant};
 /// has flipped to true. We re-anchor on these without emitting so the
 /// cursor stays still rather than teleporting halfway across the screen.
 const CURSOR_TELEPORT_GUARD: i32 = 250;
-/// Button ids 25..=28 = Touchpad TL/TR/BL/BR. Matches
-/// `config::TOUCHPAD_QUADRANT_IDS`; duplicated here to avoid pulling
-/// the config crate into the gamepad layer.
+/// Button ids 25..=28 = Touchpad TL/TR/BL/BR. Matches the touchpad rows
+/// of `config::ADDED_IDS`; duplicated here to avoid pulling the config
+/// crate into the gamepad layer.
 const QUAD_TL: u32 = 25;
 const QUAD_TR: u32 = 26;
 const QUAD_BL: u32 = 27;
@@ -245,10 +250,10 @@ fn stable_pos_for_click(
 }
 
 /// Cursor delta + touchpad click → 4-quadrant button events. Mutates
-/// `state` across frames. Called per decoded `DsState`.
+/// `state` across frames. Called per decoded `PadState`.
 fn process_touchpad(
     state: &mut TouchpadState,
-    cur: &DsState,
+    cur: &PadState,
     params: &CursorParams,
     tx: &Sender<GamepadEvent>,
 ) {
@@ -371,17 +376,130 @@ fn process_touchpad(
 
 /// Supported HID devices: (vendor id, product id, controller kind).
 /// 0x054c / 0x0ce6 = Sony DualSense (standard PS5 pad).
-const SUPPORTED_HID: &[(u16, u16, ControllerKind)] =
-    &[(0x054c, 0x0ce6, ControllerKind::DualSense)];
+/// 0x057e / 0x2009 = Nintendo Switch Pro Controller.
+const SUPPORTED_HID: &[(u16, u16, ControllerKind)] = &[
+    (0x054c, 0x0ce6, ControllerKind::DualSense),
+    (0x057e, 0x2009, ControllerKind::NsPro),
+];
+
+/// Whether a HID device is one this worker can drive, and as which kind.
+/// The DualSense matches on any bus (unchanged from v2.4.0). The Switch
+/// Pro matches only on Bluetooth: over USB it needs a separate 0x80
+/// handshake (SDL `BTrySetupUSB`) we don't send, so it would never stream
+/// and would hold the worker forever. `BusType::Unknown` (hidapi could not
+/// classify the parent devnode) counts as not Bluetooth.
+fn is_candidate(vid: u16, pid: u16, bus: hidapi::BusType) -> Option<ControllerKind> {
+    let kind = SUPPORTED_HID
+        .iter()
+        .find(|(v, p, _)| vid == *v && pid == *p)
+        .map(|(_, _, kind)| *kind)?;
+    match kind {
+        ControllerKind::NsPro if !matches!(bus, hidapi::BusType::Bluetooth) => None,
+        _ => Some(kind),
+    }
+}
+
+/// First device in enumeration order that `is_candidate` accepts.
+/// Non-candidates are skipped, so a USB Switch Pro listed before a
+/// Bluetooth DualSense doesn't hide the DualSense.
+fn first_candidate<T>(
+    mut devices: impl Iterator<Item = T>,
+    ids: impl Fn(&T) -> (u16, u16, hidapi::BusType),
+) -> Option<(T, ControllerKind)> {
+    devices.find_map(|d| {
+        let (vid, pid, bus) = ids(&d);
+        is_candidate(vid, pid, bus).map(|kind| (d, kind))
+    })
+}
 
 /// Sleep between enumeration attempts in Searching state.
 const ENUM_RETRY_INTERVAL: Duration = Duration::from_millis(1000);
 
+/// Back-off before the next enumeration after a device session ends.
+/// A session that never decoded a report and ended by timeout means an
+/// opened device that doesn't stream; wait `ENUM_RETRY_INTERVAL` before
+/// re-opening it instead of looping on it.
+fn backoff_after(outcome: &str, connected: bool) -> Option<Duration> {
+    (outcome == "timeout" && !connected).then_some(ENUM_RETRY_INTERVAL)
+}
+
 /// Blocking read timeout per HID frame. 4 ms matches BT 250 Hz cadence.
 const READ_TIMEOUT_MS: i32 = 4;
-/// After this many consecutive read-timeouts (each `READ_TIMEOUT_MS`),
-/// declare the pad disconnected. 50 × 4 ms = 200 ms.
-const DISCONNECT_AFTER_TIMEOUTS: u32 = 50;
+/// No decoded report for this long → the DualSense is gone. Matches the
+/// shipped v2.4 behaviour: 50 × read_timeout(4) ≈ 780 ms on Windows due to
+/// the 15.6 ms timer tick.
+const DS_DISCONNECT_AFTER: Duration = Duration::from_millis(800);
+/// No decoded report for this long → the Switch Pro is gone (~60 Hz stream).
+const NS_DISCONNECT_AFTER: Duration = Duration::from_millis(1000);
+/// Switch Pro simple-HID input report: the pad left full-report mode.
+const NS_REPORT_SIMPLE: u8 = 0x3F;
+/// At most one `0x03 0x30` re-init per this interval.
+const NS_REINIT_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Minimal HID device I/O, so the Switch Pro handshake and the read loop
+/// run against a fake device in tests.
+pub trait HidIo {
+    fn write(&self, data: &[u8]) -> Result<usize>;
+    fn read_timeout(&self, buf: &mut [u8], ms: i32) -> Result<usize>;
+}
+
+impl HidIo for hidapi::HidDevice {
+    fn write(&self, data: &[u8]) -> Result<usize> {
+        Ok(hidapi::HidDevice::write(self, data)?)
+    }
+
+    fn read_timeout(&self, buf: &mut [u8], ms: i32) -> Result<usize> {
+        Ok(hidapi::HidDevice::read_timeout(self, buf, ms)?)
+    }
+}
+
+/// Per-device-session protocol state: the kind's decoder, the Switch Pro
+/// stick calibration and subcommand counter (one per session), and the
+/// time of the last 0x3F re-init.
+struct Session {
+    kind: ControllerKind,
+    cal: StickCal,
+    ns_counter: u8,
+    last_reinit: Option<Instant>,
+}
+
+impl Session {
+    fn new(kind: ControllerKind) -> Self {
+        Session { kind, cal: StickCal::default(), ns_counter: 0, last_reinit: None }
+    }
+
+    fn decode(&self, frame: &[u8]) -> Option<PadState> {
+        match self.kind {
+            ControllerKind::DualSense => decode_31(frame),
+            ControllerKind::NsPro => decode_30(frame, &self.cal),
+            // Not in SUPPORTED_HID.
+            ControllerKind::Ns2Pro => None,
+        }
+    }
+
+    fn disconnect_after(&self) -> Duration {
+        match self.kind {
+            ControllerKind::DualSense => DS_DISCONNECT_AFTER,
+            ControllerKind::NsPro => NS_DISCONNECT_AFTER,
+            // Never opened by this worker (not in SUPPORTED_HID, `decode`
+            // returns None). PR 3 sets its real deadline; until then it
+            // shares the Switch Pro value.
+            ControllerKind::Ns2Pro => NS_DISCONNECT_AFTER,
+        }
+    }
+
+    /// Switch Pro only: a 0x3F report while streaming means the pad fell
+    /// back to simple-HID mode; re-send `0x03 0x30`, rate-limited.
+    fn on_simple_report(&mut self, d: &dyn HidIo) {
+        let now = Instant::now();
+        if self.last_reinit.is_some_and(|t| now.duration_since(t) < NS_REINIT_INTERVAL) {
+            return;
+        }
+        self.last_reinit = Some(now);
+        tracing::info!("Switch Pro sent 0x3F; re-sending input mode 0x30");
+        send_input_mode_full(d, &mut self.ns_counter);
+    }
+}
 
 pub struct HidSource {
     rx: Receiver<GamepadEvent>,
@@ -390,9 +508,9 @@ pub struct HidSource {
 
 impl HidSource {
     /// Spawn the production hidapi worker. The worker thread starts in
-    /// `Searching` and emits no events until the first 0x31 frame is
-    /// decoded. `params` carries the live touchpad cursor sensitivity
-    /// and on/off flag; the engine mutates them through `set_settings`.
+    /// `Searching` and emits no events until the first decoded report.
+    /// `params` carries the live touchpad cursor sensitivity and on/off
+    /// flag; the engine mutates them through `set_settings`.
     /// `disconnect_rx` receives manual disconnect signals from the GUI
     /// (Task 13 wires the actual state transition; ignored here with `_` prefix).
     pub fn new(params: CursorParams, disconnect_rx: crossbeam_channel::Receiver<()>) -> Result<Self> {
@@ -428,6 +546,22 @@ impl HidSource {
         byte_rx: Receiver<Vec<u8>>,
         params: CursorParams,
     ) -> Self {
+        Self::spawn_byte_stream(ControllerKind::DualSense, byte_rx, params)
+    }
+
+    /// Byte-stream test worker for any kind: decodes with that kind's
+    /// decoder (Switch Pro with default stick calibration). No handshake,
+    /// no writes.
+    #[doc(hidden)]
+    pub fn new_from_byte_stream_for(kind: ControllerKind, byte_rx: Receiver<Vec<u8>>) -> Self {
+        Self::spawn_byte_stream(kind, byte_rx, CursorParams::default())
+    }
+
+    fn spawn_byte_stream(
+        kind: ControllerKind,
+        byte_rx: Receiver<Vec<u8>>,
+        params: CursorParams,
+    ) -> Self {
         let (tx, rx) = unbounded::<GamepadEvent>();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
@@ -440,7 +574,7 @@ impl HidSource {
             // would be selected on every iteration.
             .spawn(move || {
                 let _keep_alive = dummy_tx;
-                worker_byte_stream(byte_rx, tx, stop_for_thread, params, dummy_rx)
+                worker_byte_stream(kind, byte_rx, tx, stop_for_thread, params, dummy_rx)
             })
             .expect("spawning fake HID worker");
         Self { rx, stop }
@@ -480,39 +614,60 @@ fn worker_real(
         if let Err(e) = api.refresh_devices() {
             tracing::warn!(error = %e, "hidapi refresh_devices failed");
         }
-        let device = api
-            .device_list()
-            .find_map(|info| {
-                SUPPORTED_HID
-                    .iter()
-                    .find(|(vid, pid, _)| info.vendor_id() == *vid && info.product_id() == *pid)
-                    .map(|(_, _, kind)| (info, *kind))
-            })
-            .and_then(|(info, kind)| info.open_device(&api).ok().map(|d| (d, kind)));
+        let device = first_candidate(api.device_list(), |info| {
+            (info.vendor_id(), info.product_id(), info.bus_type())
+        })
+        .and_then(|(info, kind)| info.open_device(&api).ok().map(|d| (d, kind)));
         match device {
             Some((d, kind)) => {
-                tracing::info!("DualSense opened, attempting 0x31 handshake");
-                let _ = try_handshake(&d);
-                let mut prev_buttons = [false; 25];
-                let mut last_state: Option<DsState> = None;
+                tracing::info!("{} opened, attempting handshake", kind.display_name());
+                let mut session = Session::new(kind);
+                match kind {
+                    ControllerKind::DualSense => {
+                        let _ = try_handshake(&d);
+                    }
+                    ControllerKind::NsPro => {
+                        session.cal = ns_handshake_counted(
+                            &d,
+                            &mut |t: Duration| thread::sleep(t),
+                            &mut session.ns_counter,
+                        );
+                    }
+                    ControllerKind::Ns2Pro => {}
+                }
+                let mut prev_buttons = [false; BUTTON_SLOTS];
+                let mut last_state: Option<PadState> = None;
                 let mut touchpad = TouchpadState::default();
                 let outcome = read_loop(
-                    d, kind, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
+                    &d, &mut session, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
                     &params, &stop, &disconnect_rx,
                 );
-                // The HID handle (`d`) was moved into read_loop and is now
-                // dropped, so Windows can cleanly drop the Bluetooth bond.
-                // A user-requested disconnect means "turn the pad off": the
-                // DualSense HID protocol has no power-off command, so power
-                // it off at the Bluetooth-link layer (see `crate::platform`).
+                // Switch Pro: ask the pad to sleep while the handle is still
+                // open, then drop it below.
+                if outcome == "manual-disconnect" && kind == ControllerKind::NsPro {
+                    send_turn_off(&d, &mut session.ns_counter);
+                }
+                // Drop the HID handle so Windows can cleanly drop the
+                // Bluetooth bond.
+                drop(d);
+                // A user-requested disconnect means "turn the pad off": drop
+                // the Bluetooth link (see `crate::platform`). The DualSense
+                // has no HID power-off command; the Switch Pro got its
+                // subcmd 0x06 above and the link drop makes it certain.
                 if outcome == "manual-disconnect" {
-                    match crate::platform::power_off_connected_dualsense() {
+                    match crate::platform::power_off_connected(kind) {
                         Ok(n) => tracing::info!(removed = n, "controller power-off requested"),
                         Err(e) => tracing::warn!(error = %e, "controller power-off failed"),
                     }
                 }
                 tracing::info!(?outcome, "read loop exited; back to Searching");
                 let _ = tx.send(GamepadEvent::Disconnected);
+                // `last_state` is set only by a decoded report, i.e. exactly
+                // when `Connected` was emitted.
+                if let Some(t) = backoff_after(outcome, last_state.is_some()) {
+                    tracing::info!("{} never streamed; backing off", kind.display_name());
+                    thread::sleep(t);
+                }
             }
             None => {
                 // While Searching with no pad available, still respect
@@ -533,18 +688,20 @@ fn try_handshake(d: &hidapi::HidDevice) -> Result<()> {
 }
 
 fn read_loop(
-    d: hidapi::HidDevice,
-    kind: ControllerKind,
+    d: &dyn HidIo,
+    session: &mut Session,
     tx: &Sender<GamepadEvent>,
-    last_state: &mut Option<DsState>,
-    prev_buttons: &mut [bool; 25],
+    last_state: &mut Option<PadState>,
+    prev_buttons: &mut [bool; BUTTON_SLOTS],
     touchpad: &mut TouchpadState,
     params: &CursorParams,
     stop: &Arc<AtomicBool>,
     disconnect_rx: &crossbeam_channel::Receiver<()>,
 ) -> &'static str {
     let mut buf = [0u8; REPORT_LEN_BT];
-    let mut consecutive_timeouts = 0u32;
+    let disconnect_after = session.disconnect_after();
+    // Reset only by a decoded report of this kind (iron rule 11).
+    let mut deadline = Instant::now() + disconnect_after;
     let mut emitted_connected = false;
     while !stop.load(Ordering::SeqCst) {
         // Manual disconnect check — drop device and return to Searching.
@@ -552,22 +709,17 @@ fn read_loop(
             return "manual-disconnect";
         }
         match d.read_timeout(&mut buf, READ_TIMEOUT_MS) {
-            Ok(0) => {
-                consecutive_timeouts += 1;
-                if consecutive_timeouts >= DISCONNECT_AFTER_TIMEOUTS {
-                    return "timeout";
+            Ok(0) => {}
+            Ok(n) => {
+                let frame = &buf[..n];
+                if session.kind == ControllerKind::NsPro && frame[0] == NS_REPORT_SIMPLE {
+                    session.on_simple_report(d);
                 }
-            }
-            Ok(_n) => {
-                consecutive_timeouts = 0;
-                if let Some(s) = decode_31(&buf) {
-                    if !emitted_connected {
-                        let _ = tx.send(GamepadEvent::Connected(kind));
-                        emitted_connected = true;
-                    }
-                    diff_emit(last_state.as_ref(), &s, prev_buttons, tx);
-                    process_touchpad(touchpad, &s, params, tx);
-                    *last_state = Some(s);
+                if handle_frame(
+                    session, frame, &mut emitted_connected, last_state, prev_buttons,
+                    touchpad, params, tx,
+                ) {
+                    deadline = Instant::now() + disconnect_after;
                 }
             }
             Err(e) => {
@@ -575,11 +727,44 @@ fn read_loop(
                 return "read-error";
             }
         }
+        if Instant::now() >= deadline {
+            return "timeout";
+        }
     }
     "stop-signal"
 }
 
+/// Decode one raw report with the session kind's decoder and emit its
+/// events (`Connected` on the first decoded report). Touchpad processing
+/// is DualSense-only. Returns whether the report decoded.
+#[allow(clippy::too_many_arguments)]
+fn handle_frame(
+    session: &Session,
+    frame: &[u8],
+    emitted_connected: &mut bool,
+    last_state: &mut Option<PadState>,
+    prev_buttons: &mut [bool; BUTTON_SLOTS],
+    touchpad: &mut TouchpadState,
+    params: &CursorParams,
+    tx: &Sender<GamepadEvent>,
+) -> bool {
+    let Some(s) = session.decode(frame) else {
+        return false;
+    };
+    if !*emitted_connected {
+        let _ = tx.send(GamepadEvent::Connected(session.kind));
+        *emitted_connected = true;
+    }
+    diff_emit(last_state.as_ref(), &s, prev_buttons, tx);
+    if session.kind == ControllerKind::DualSense {
+        process_touchpad(touchpad, &s, params, tx);
+    }
+    *last_state = Some(s);
+    true
+}
+
 fn worker_byte_stream(
+    kind: ControllerKind,
     byte_rx: Receiver<Vec<u8>>,
     tx: Sender<GamepadEvent>,
     stop: Arc<AtomicBool>,
@@ -587,8 +772,9 @@ fn worker_byte_stream(
     disconnect_rx: crossbeam_channel::Receiver<()>,
 ) {
     use crossbeam_channel::select;
-    let mut last_state: Option<DsState> = None;
-    let mut prev_buttons = [false; 25];
+    let session = Session::new(kind);
+    let mut last_state: Option<PadState> = None;
+    let mut prev_buttons = [false; BUTTON_SLOTS];
     let mut touchpad = TouchpadState::default();
     let mut emitted_connected = false;
     let mut disconnect_alive = true;
@@ -610,15 +796,10 @@ fn worker_byte_stream(
                 }
                 recv(byte_rx) -> result => match result {
                     Ok(buf) => {
-                        if let Some(s) = decode_31(&buf) {
-                            if !emitted_connected {
-                                let _ = tx.send(GamepadEvent::Connected(ControllerKind::DualSense));
-                                emitted_connected = true;
-                            }
-                            diff_emit(last_state.as_ref(), &s, &mut prev_buttons, &tx);
-                            process_touchpad(&mut touchpad, &s, &params, &tx);
-                            last_state = Some(s);
-                        }
+                        handle_frame(
+                            &session, &buf, &mut emitted_connected, &mut last_state,
+                            &mut prev_buttons, &mut touchpad, &params, &tx,
+                        );
                     }
                     Err(_) => {
                         let _ = tx.send(GamepadEvent::Disconnected);
@@ -630,15 +811,10 @@ fn worker_byte_stream(
             // disconnect_rx is closed — fall back to plain blocking recv on byte_rx.
             match byte_rx.recv() {
                 Ok(buf) => {
-                    if let Some(s) = decode_31(&buf) {
-                        if !emitted_connected {
-                            let _ = tx.send(GamepadEvent::Connected(ControllerKind::DualSense));
-                            emitted_connected = true;
-                        }
-                        diff_emit(last_state.as_ref(), &s, &mut prev_buttons, &tx);
-                        process_touchpad(&mut touchpad, &s, &params, &tx);
-                        last_state = Some(s);
-                    }
+                    handle_frame(
+                        &session, &buf, &mut emitted_connected, &mut last_state,
+                        &mut prev_buttons, &mut touchpad, &params, &tx,
+                    );
                 }
                 Err(_) => {
                     let _ = tx.send(GamepadEvent::Disconnected);
@@ -650,9 +826,9 @@ fn worker_byte_stream(
 }
 
 fn diff_emit(
-    prev: Option<&DsState>,
-    cur: &DsState,
-    prev_buttons: &mut [bool; 25],
+    prev: Option<&PadState>,
+    cur: &PadState,
+    prev_buttons: &mut [bool; BUTTON_SLOTS],
     tx: &Sender<GamepadEvent>,
 ) {
     if prev.map_or(true, |p| p.stick_lx != cur.stick_lx) {
@@ -887,7 +1063,7 @@ mod tests {
         let (disc_tx, disc_rx) = crossbeam_channel::unbounded::<()>();
         let params = CursorParams::default();
         let h = std::thread::spawn(move || {
-            super::worker_byte_stream(byte_rx, evt_tx, stop_clone, params, disc_rx);
+            super::worker_byte_stream(ControllerKind::DualSense, byte_rx, evt_tx, stop_clone, params, disc_rx);
         });
         // Send disconnect immediately
         disc_tx.send(()).expect("send disconnect");
@@ -917,5 +1093,274 @@ mod tests {
         let now = t0 + Duration::from_millis(60);
         let stable = stable_pos_for_click(&state, now, Duration::from_millis(30));
         assert_eq!(stable, Some((130, 100)));
+    }
+
+    const ALL_BUSES: [hidapi::BusType; 5] = [
+        hidapi::BusType::Unknown,
+        hidapi::BusType::Usb,
+        hidapi::BusType::Bluetooth,
+        hidapi::BusType::I2c,
+        hidapi::BusType::Spi,
+    ];
+
+    #[test]
+    fn is_candidate_ds_any_bus() {
+        // DualSense matching is unchanged from v2.4.0: no bus filter.
+        for bus in ALL_BUSES {
+            assert_eq!(is_candidate(0x054c, 0x0ce6, bus), Some(ControllerKind::DualSense), "{bus:?}");
+        }
+    }
+
+    #[test]
+    fn is_candidate_ns_bluetooth_only() {
+        // A USB-attached 057e:2009 needs the 0x80 USB handshake we don't
+        // send; Unknown is treated as not-Bluetooth.
+        for bus in ALL_BUSES {
+            let want = matches!(bus, hidapi::BusType::Bluetooth).then_some(ControllerKind::NsPro);
+            assert_eq!(is_candidate(0x057e, 0x2009, bus), want, "{bus:?}");
+        }
+        assert_eq!(is_candidate(0x057e, 0x2009, hidapi::BusType::Usb), None);
+        assert_eq!(is_candidate(0x057e, 0x2009, hidapi::BusType::Unknown), None);
+        // Unrelated devices never match.
+        assert_eq!(is_candidate(0x046d, 0xc52b, hidapi::BusType::Usb), None);
+        assert_eq!(is_candidate(0x057e, 0x2006, hidapi::BusType::Bluetooth), None);
+    }
+
+    #[test]
+    fn first_candidate_skips_usb_switch_pro() {
+        // A USB Switch Pro enumerated before a Bluetooth DualSense must not
+        // starve the DualSense (v2.4.0 regression guard).
+        let devs = vec![
+            (0x057e, 0x2009, hidapi::BusType::Usb),
+            (0x046d, 0xc52b, hidapi::BusType::Usb),
+            (0x054c, 0x0ce6, hidapi::BusType::Bluetooth),
+        ];
+        let got = first_candidate(devs.into_iter(), |d| *d);
+        assert_eq!(got.map(|(d, k)| (d.0, k)), Some((0x054c, ControllerKind::DualSense)));
+
+        let devs = vec![(0x057e, 0x2009, hidapi::BusType::Usb)];
+        assert!(first_candidate(devs.into_iter(), |d| *d).is_none());
+
+        let devs = vec![
+            (0x057e, 0x2009, hidapi::BusType::Bluetooth),
+            (0x054c, 0x0ce6, hidapi::BusType::Bluetooth),
+        ];
+        let got = first_candidate(devs.into_iter(), |d| *d);
+        assert_eq!(got.map(|(_, k)| k), Some(ControllerKind::NsPro), "first candidate wins");
+    }
+
+    #[test]
+    fn backoff_only_after_a_dead_session_timeout() {
+        // Opened, never decoded a report, timed out: back off before the
+        // next enumeration so a dead device isn't re-opened in a tight loop.
+        assert_eq!(backoff_after("timeout", false), Some(ENUM_RETRY_INTERVAL));
+        // A pad that streamed and then went quiet is searched for at once.
+        assert_eq!(backoff_after("timeout", true), None);
+        assert_eq!(backoff_after("read-error", false), None);
+        assert_eq!(backoff_after("read-error", true), None);
+        assert_eq!(backoff_after("manual-disconnect", false), None);
+        assert_eq!(backoff_after("stop-signal", false), None);
+    }
+}
+
+#[cfg(test)]
+mod read_loop_tests {
+    use super::*;
+    use crate::gamepad::ns_protocol::build_subcmd;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    enum Step {
+        Frame(Vec<u8>),
+        /// A read that times out after `ms` (returns 0 bytes).
+        Idle(u64),
+        Error,
+    }
+
+    /// Scripted device for `read_loop`. When the script runs out every
+    /// read is a timeout of the requested length.
+    struct ScriptIo {
+        steps: Mutex<VecDeque<Step>>,
+        writes: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl ScriptIo {
+        fn new(steps: Vec<Step>) -> Self {
+            ScriptIo { steps: Mutex::new(steps.into()), writes: Mutex::new(Vec::new()) }
+        }
+    }
+
+    impl HidIo for ScriptIo {
+        fn write(&self, data: &[u8]) -> Result<usize> {
+            self.writes.lock().unwrap().push(data.to_vec());
+            Ok(data.len())
+        }
+        fn read_timeout(&self, buf: &mut [u8], ms: i32) -> Result<usize> {
+            let step = self.steps.lock().unwrap().pop_front();
+            match step {
+                Some(Step::Frame(f)) => {
+                    let n = f.len().min(buf.len());
+                    buf[..n].copy_from_slice(&f[..n]);
+                    Ok(n)
+                }
+                Some(Step::Idle(t)) => {
+                    thread::sleep(Duration::from_millis(t));
+                    Ok(0)
+                }
+                Some(Step::Error) => Err(anyhow!("device gone")),
+                None => {
+                    thread::sleep(Duration::from_millis(ms as u64));
+                    Ok(0)
+                }
+            }
+        }
+    }
+
+    fn ds_frame() -> Vec<u8> {
+        let mut b = vec![0u8; REPORT_LEN_BT];
+        b[0] = 0x31;
+        b[2..6].copy_from_slice(&[128; 4]);
+        b[9] = 0x08;
+        b[34] = 0x80;
+        b[38] = 0x80;
+        b
+    }
+
+    fn ns_frame() -> Vec<u8> {
+        let mut b = vec![0u8; 49];
+        b[0] = 0x30;
+        b[6..9].copy_from_slice(&[0x00, 0x08, 0x80]);
+        b[9..12].copy_from_slice(&[0x00, 0x08, 0x80]);
+        b
+    }
+
+    fn ns_3f() -> Vec<u8> {
+        let mut b = vec![0u8; 12];
+        b[0] = 0x3F;
+        b
+    }
+
+    fn run(io: &ScriptIo, session: &mut Session) -> (&'static str, Duration, Vec<GamepadEvent>) {
+        let (tx, rx) = unbounded();
+        let (_dtx, drx) = unbounded::<()>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut last_state = None;
+        let mut prev_buttons = [false; BUTTON_SLOTS];
+        let mut touchpad = TouchpadState::default();
+        let params = CursorParams::default();
+        let t0 = Instant::now();
+        let outcome = read_loop(
+            io, session, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
+            &params, &stop, &drx,
+        );
+        let elapsed = t0.elapsed();
+        (outcome, elapsed, rx.try_iter().collect())
+    }
+
+    #[test]
+    fn ds_deadline_is_800ms() {
+        // No report at all: gone after ~800 ms, not before.
+        let io = ScriptIo::new(vec![]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, elapsed, _) = run(&io, &mut s);
+        assert_eq!(outcome, "timeout");
+        assert!(elapsed >= Duration::from_millis(800), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1600), "{elapsed:?}");
+
+        // A 500 ms gap between decoded reports (BT interference) is survived.
+        let io = ScriptIo::new(vec![
+            Step::Frame(ds_frame()), Step::Idle(500), Step::Frame(ds_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        assert_eq!(run(&io, &mut s).0, "read-error", "500 ms gap must not disconnect");
+
+        // A 900 ms gap is not (DualSense is tighter than the Switch Pro).
+        let io = ScriptIo::new(vec![
+            Step::Frame(ds_frame()), Step::Idle(900), Step::Frame(ds_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        assert_eq!(run(&io, &mut s).0, "timeout", "900 ms gap must disconnect");
+    }
+
+    #[test]
+    fn ns_deadline_is_1000ms() {
+        let io = ScriptIo::new(vec![]);
+        let mut s = Session::new(ControllerKind::NsPro);
+        let (outcome, elapsed, _) = run(&io, &mut s);
+        assert_eq!(outcome, "timeout");
+        assert!(elapsed >= Duration::from_millis(1000), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(2000), "{elapsed:?}");
+
+        // The 900 ms gap that drops a DualSense is survived by a Switch Pro.
+        let io = ScriptIo::new(vec![
+            Step::Frame(ns_frame()), Step::Idle(900), Step::Frame(ns_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::NsPro);
+        assert_eq!(run(&io, &mut s).0, "read-error", "900 ms gap must not disconnect");
+    }
+
+    #[test]
+    fn decoded_frame_resets_deadline_undecoded_does_not() {
+        // Decoded 0x31 frames 600 ms apart keep a DualSense alive past 800 ms.
+        let io = ScriptIo::new(vec![
+            Step::Frame(ds_frame()), Step::Idle(600),
+            Step::Frame(ds_frame()), Step::Idle(600),
+            Step::Frame(ds_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, events) = run(&io, &mut s);
+        assert_eq!(outcome, "read-error", "decoded frames must reset the deadline");
+        assert_eq!(events.first(), Some(&GamepadEvent::Connected(ControllerKind::DualSense)));
+
+        // A non-0x31 report is traffic but not a decoded frame: no reset.
+        let mut junk = ds_frame();
+        junk[0] = 0x01;
+        let io = ScriptIo::new(vec![
+            Step::Idle(600), Step::Frame(junk), Step::Idle(300), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, events) = run(&io, &mut s);
+        assert_eq!(outcome, "timeout");
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn ns_0x3f_reinit_rate_limited_once_per_second() {
+        let mut steps = Vec::new();
+        for _ in 0..5 {
+            steps.push(Step::Frame(ns_3f()));
+            steps.push(Step::Idle(4));
+        }
+        steps.push(Step::Frame(ns_frame()));
+        steps.push(Step::Idle(600));
+        steps.push(Step::Frame(ns_frame()));
+        steps.push(Step::Idle(500));
+        steps.push(Step::Frame(ns_3f())); // > 1 s after the first re-init
+        steps.push(Step::Frame(ns_frame()));
+        steps.push(Step::Error);
+        let io = ScriptIo::new(steps);
+        let mut s = Session::new(ControllerKind::NsPro);
+        s.ns_counter = 4;
+        let (outcome, _, events) = run(&io, &mut s);
+        assert_eq!(outcome, "read-error");
+        assert_eq!(events.first(), Some(&GamepadEvent::Connected(ControllerKind::NsPro)));
+        let writes = io.writes.lock().unwrap().clone();
+        assert_eq!(
+            writes,
+            vec![build_subcmd(4, 0x03, &[0x30]).to_vec(), build_subcmd(5, 0x03, &[0x30]).to_vec()],
+            "one 0x03 0x30 per second of 0x3F, on the session counter"
+        );
+        assert_eq!(s.ns_counter, 6);
+    }
+
+    #[test]
+    fn ds_ignores_0x3f() {
+        let io = ScriptIo::new(vec![
+            Step::Frame(ds_frame()), Step::Frame(ns_3f()), Step::Frame(ds_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run(&io, &mut s);
+        assert_eq!(outcome, "read-error");
+        assert!(io.writes.lock().unwrap().is_empty());
     }
 }

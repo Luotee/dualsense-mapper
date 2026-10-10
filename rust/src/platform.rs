@@ -23,6 +23,9 @@
 //! This is user-mode Bluetooth *connection management* — not input
 //! synthesis, not a driver, not process hooking. It stays within iron
 //! rule #7.
+//!
+//! The same link-level disconnect serves the Switch Pro Controller (matched
+//! by its "Pro Controller" Bluetooth name); see [`power_off_connected`].
 
 /// `IOCTL_BTH_DISCONNECT_DEVICE` from bthioctl.h:
 /// `CTL_CODE(FILE_DEVICE_BLUETOOTH=0x41, function=0x03, METHOD_BUFFERED=0,
@@ -31,7 +34,9 @@
 #[cfg(target_os = "windows")]
 const IOCTL_BTH_DISCONNECT_DEVICE: u32 = 0x0041_000C;
 
-/// Disconnect every currently-connected DualSense at the Bluetooth-link
+use crate::gamepad::ControllerKind;
+
+/// Disconnect every currently-connected pad of `kind` at the Bluetooth-link
 /// layer, keeping each pad's pairing intact. The pad, having lost its host
 /// link, powers itself off; pressing PS reconnects it with no re-pairing.
 /// Returns the number of controllers a disconnect was successfully issued
@@ -41,7 +46,7 @@ const IOCTL_BTH_DISCONNECT_DEVICE: u32 = 0x0041_000C;
 /// connected pad is on Bluetooth by construction. A USB-only pad cannot be
 /// powered off in software (it is bus-powered) and simply won't match.
 #[cfg(target_os = "windows")]
-pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
+pub fn power_off_connected(kind: ControllerKind) -> anyhow::Result<usize> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Devices::Bluetooth::{
         BluetoothFindDeviceClose, BluetoothFindFirstDevice, BluetoothFindFirstRadio,
@@ -50,6 +55,13 @@ pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
     };
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::IO::DeviceIoControl;
+
+    let matches: fn(&str) -> bool = match kind {
+        ControllerKind::DualSense => is_dualsense_name,
+        ControllerKind::NsPro => is_ns_pro_name,
+        // PR 3 handles the NS2 Pro (BLE); there is no classic-BT link to drop.
+        ControllerKind::Ns2Pro => return Ok(0),
+    };
 
     // SAFETY: every struct is zero-initialised then has its `dwSize` set
     // before the FFI call, exactly as the Win32 Bluetooth API requires.
@@ -72,7 +84,7 @@ pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
         let mut targets: Vec<u64> = Vec::new();
         if !find.is_null() {
             loop {
-                if info.fConnected != 0 && is_dualsense_name(&decode_name(&info.szName)) {
+                if info.fConnected != 0 && matches(&decode_name(&info.szName)) {
                     // BLUETOOTH_ADDRESS is a union; ullLong is the 48-bit
                     // device address packed into a u64 — the BTH_ADDR the
                     // disconnect IOCTL expects.
@@ -116,7 +128,7 @@ pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
                     );
                     if ok != 0 {
                         done.insert(addr);
-                        tracing::info!("disconnected DualSense Bluetooth link (pairing kept)");
+                        tracing::info!("disconnected {} Bluetooth link (pairing kept)", kind.display_name());
                     }
                 }
                 CloseHandle(radio);
@@ -132,7 +144,7 @@ pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
             tracing::warn!(
                 wanted = targets.len(),
                 done = done.len(),
-                "some DualSense links could not be disconnected"
+                "some controller links could not be disconnected"
             );
         }
         Ok(done.len())
@@ -143,13 +155,13 @@ pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
 /// (`IOBluetoothDevice closeConnection`). Until then, fail loudly so the
 /// GUI can surface "not supported yet" rather than silently no-op.
 #[cfg(target_os = "macos")]
-pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
+pub fn power_off_connected(_kind: ControllerKind) -> anyhow::Result<usize> {
     anyhow::bail!("controller power-off is not yet implemented on macOS (Phase 2 TBD)")
 }
 
 /// Other platforms (the Linux dev host): no Bluetooth management path.
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-pub fn power_off_connected_dualsense() -> anyhow::Result<usize> {
+pub fn power_off_connected(_kind: ControllerKind) -> anyhow::Result<usize> {
     anyhow::bail!("controller power-off is only supported on Windows")
 }
 
@@ -174,9 +186,31 @@ fn is_dualsense_name(name: &str) -> bool {
     n.contains("dualsense") || n.contains("wireless controller")
 }
 
+/// True when a Bluetooth device name belongs to a Switch Pro Controller
+/// ("Pro Controller", or "Nintendo Switch Pro Controller" on some stacks).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_ns_pro_name(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("pro controller")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_dualsense_name;
+    use super::{is_dualsense_name, is_ns_pro_name};
+
+    #[test]
+    fn matches_ns_pro_names() {
+        assert!(is_ns_pro_name("Pro Controller"));
+        assert!(is_ns_pro_name("Nintendo Switch Pro Controller"));
+        assert!(is_ns_pro_name("PRO CONTROLLER"));
+        assert!(!is_ns_pro_name("DualSense Wireless Controller"));
+        assert!(!is_ns_pro_name("Wireless Controller"));
+        assert!(!is_ns_pro_name(""));
+    }
+
+    #[test]
+    fn dualsense_names_unchanged_vs_ns() {
+        assert!(!is_dualsense_name("Pro Controller"));
+    }
 
     #[test]
     fn matches_known_dualsense_names() {
