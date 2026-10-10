@@ -46,7 +46,7 @@ not stage these files; do not bypass the ignore with `git add -f`.
 ```bash
 sudo apt install -y pkg-config libudev-dev   # gilrs Linux backend deps
 cd rust
-cargo test                                    # 182 tests, ~4s
+cargo test                                    # 188 tests, ~4s
 cargo build --release                         # native Linux binary
 ```
 
@@ -218,10 +218,11 @@ regresses real, observed bugs the codebase already fixed once:
    Bypassing this leaks a stuck KEYDOWN or MOUSEDOWN — see commit
    `1d64f25` for the keyboard bug shape; the mouse half landed in
    v2.1.0.
-3. **`KeyboardSink::Drop`, `MouseSink::Drop`, and the panic hook in
-   `app.rs` must run `release_all_held` unconditionally.** They are
-   the last-line defence against stuck keys / stuck mouse buttons when
-   the process dies. `release_all_held` releases every held key **and**
+3. **`KeyboardSink::Drop`, `MouseSink::Drop`, the panic hook in
+   `app.rs`, and the engine's Disconnected handler must run
+   `release_all_held` unconditionally.** They are the last-line defence
+   against stuck keys / stuck mouse buttons when the process dies or the
+   controller drops. `release_all_held` releases every held key **and**
    every held mouse button, and never waits on `min_press_ms` —
    shutdown beats anti-cheat profile.
 4. **Macro threads drain every unmatched `Press` as `Release` on every

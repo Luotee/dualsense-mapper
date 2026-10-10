@@ -3,6 +3,14 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-10-11
+
+### Fixed
+
+- A key (or mouse button / running macro) held at the moment the
+  controller disconnects is now released immediately — previously it could
+  stay held on Windows until pressed again. Affects every controller.
+
 ## [2.5.0] - 2026-10-11
 
 ### Added
@@ -31,7 +39,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A key held at the moment the controller disconnects can stay held
   (pre-existing, all controllers; the fix follows in the next patch
-  release).
+  release). (fixed in 2.5.1)
 
 ### Migration
 
