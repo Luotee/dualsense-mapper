@@ -4,7 +4,7 @@
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GamepadEvent {
-    Connected,
+    Connected(crate::gamepad::ControllerKind),
     Disconnected,
     ButtonDown(u32),
     ButtonUp(u32),

@@ -78,3 +78,18 @@ fn hot_rebind_picks_up_new_binding_on_next_event() {
 
     engine.shutdown();
 }
+
+#[test]
+fn connected_status_carries_kind() {
+    use dualsense_mapper::gamepad::{ControllerKind, GamepadEvent};
+    let cfg = load_minimal_config();
+    let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
+    let handle = engine.handle();
+
+    handle.fake_event(GamepadEvent::Connected(ControllerKind::DualSense));
+    std::thread::sleep(Duration::from_millis(100));
+
+    let status = handle.current_status().expect("status after Connected");
+    assert_eq!(status.kind, ControllerKind::DualSense);
+    assert_eq!(status.name, "DualSense");
+}

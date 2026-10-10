@@ -57,7 +57,7 @@ impl Mapper {
 
     pub fn handle(&mut self, ev: GamepadEvent) -> Vec<KeyAction> {
         match ev {
-            GamepadEvent::Connected | GamepadEvent::Disconnected => Vec::new(),
+            GamepadEvent::Connected(_) | GamepadEvent::Disconnected => Vec::new(),
             GamepadEvent::ButtonDown(id) => self.physical_down(id),
             GamepadEvent::ButtonUp(id)   => self.physical_up(id),
             GamepadEvent::Stick { axis, value } => {

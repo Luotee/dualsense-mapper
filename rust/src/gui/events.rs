@@ -11,13 +11,13 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
         loop {
             for ev in engine.drain_events() {
                 let _ = match ev {
-                    EngineEvent::ControllerConnected { name, transport } => {
+                    EngineEvent::ControllerConnected { name, transport, kind } => {
                         // Spec §10: tray icon swaps to "connected" on plug-in.
                         if let Some(tray) = app.try_state::<TrayIcon<R>>() {
                             let _ = crate::gui::tray::set_connected(&tray, true);
                         }
                         app.emit("controller-status", serde_json::json!({
-                            "connected": true, "name": name, "transport": transport
+                            "connected": true, "name": name, "transport": transport, "kind": kind
                         }))
                     }
                     EngineEvent::ControllerDisconnected => {
@@ -25,7 +25,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
                             let _ = crate::gui::tray::set_connected(&tray, false);
                         }
                         app.emit("controller-status", serde_json::json!({
-                            "connected": false, "name": "", "transport": ""
+                            "connected": false, "name": "", "transport": "", "kind": null
                         }))
                     }
                     EngineEvent::ButtonDown { id } =>

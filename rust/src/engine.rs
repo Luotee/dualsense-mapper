@@ -9,7 +9,7 @@
 //!   * `EngineEvent` — what the loop emits for the activity log.
 
 use crate::config::Config;
-use crate::gamepad::{CursorParams, GamepadSource};
+use crate::gamepad::{ControllerKind, CursorParams, GamepadSource};
 use crate::keyboard::KeyboardSink;
 use crate::macro_engine::MacroEngine;
 use crate::mapper::{KeyAction, Mapper};
@@ -26,7 +26,7 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
-    ControllerConnected { name: String, transport: String },
+    ControllerConnected { name: String, transport: String, kind: ControllerKind },
     ControllerDisconnected,
     ButtonDown { id: u32 },
     ButtonUp   { id: u32 },
@@ -48,6 +48,8 @@ pub enum EngineEvent {
 pub struct ControllerStatus {
     pub name: String,
     pub transport: String,
+    pub kind: ControllerKind,
+    pub warnings: Vec<String>,
 }
 
 // ─── ConfigWriteGuard — bumps generation on drop ─────────────────────────────
@@ -177,6 +179,17 @@ impl Handle {
         if let Ok(guard) = self.inner.fake_tx.lock() {
             if let Some(ref tx) = *guard {
                 let _ = tx.send(crate::gamepad::GamepadEvent::ButtonDown(id));
+            }
+        }
+    }
+
+    /// Inject an arbitrary fake gamepad event. Works only when spawned via
+    /// `Engine::spawn_with_fake_gamepad`; no-op otherwise.
+    #[doc(hidden)]
+    pub fn fake_event(&self, ev: crate::gamepad::GamepadEvent) {
+        if let Ok(guard) = self.inner.fake_tx.lock() {
+            if let Some(ref tx) = *guard {
+                let _ = tx.send(ev);
             }
         }
     }
@@ -351,15 +364,19 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
                     crate::gamepad::GamepadEvent::ButtonUp(id) => {
                         let _ = h.event_tx.send(EngineEvent::ButtonUp { id: *id });
                     }
-                    crate::gamepad::GamepadEvent::Connected => {
+                    crate::gamepad::GamepadEvent::Connected(kind) => {
+                        let kind = *kind;
                         let status = ControllerStatus {
-                            name: "DualSense".to_string(),
-                            transport: "USB/BT".to_string(),
+                            name: kind.display_name().to_string(),
+                            transport: "BT".to_string(),
+                            kind,
+                            warnings: vec![],
                         };
                         *h.current_status.write().unwrap() = Some(status.clone());
                         let _ = h.event_tx.send(EngineEvent::ControllerConnected {
                             name: status.name,
                             transport: status.transport,
+                            kind,
                         });
                     }
                     crate::gamepad::GamepadEvent::Disconnected => {
