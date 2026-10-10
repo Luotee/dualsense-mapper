@@ -277,6 +277,37 @@ mod tests {
     }
 
     #[test]
+    fn decode_30_zl_only() {
+        let s = decode_30(&neutral(0, 0, 0x80), &StickCal::default()).unwrap();
+        assert_eq!((s.trigger_l2, s.trigger_r2), (1.0, 0.0));
+        assert!(s.buttons[23]);
+        assert!(!s.buttons[24]);
+    }
+
+    #[test]
+    fn decode_30_zr_only() {
+        let s = decode_30(&neutral(0x80, 0, 0), &StickCal::default()).unwrap();
+        assert_eq!((s.trigger_l2, s.trigger_r2), (0.0, 1.0));
+        assert!(!s.buttons[23]);
+        assert!(s.buttons[24]);
+    }
+
+    #[test]
+    fn parse_21_ack_bit7_only() {
+        let mut b = [0u8; 40];
+        b[0] = 0x21;
+        b[13] = 0x80;
+        assert!(parse_21(&b).unwrap().ack, "bit 7 alone = ACK");
+        b[13] = 0x10;
+        assert!(!parse_21(&b).unwrap().ack, "low bits without bit 7 = NACK");
+    }
+
+    #[test]
+    fn subcmd_counter_masked() {
+        assert_eq!(build_subcmd(0x13, 0x03, &[0x30])[1], 0x03);
+    }
+
+    #[test]
     fn decode_30_rejects_bad() {
         assert!(decode_30(&[0x30; 11], &StickCal::default()).is_none());
         let mut b = neutral(0, 0, 0);

@@ -264,3 +264,85 @@ fn channel_close_emits_disconnected() {
     assert!(out.iter().any(|e| matches!(e, GamepadEvent::Disconnected)),
         "expected Disconnected after channel close: {out:?}");
 }
+
+// ── Switch Pro (0x30 standard input report) ─────────────────────────────
+
+/// 49-byte 0x30 frame with both sticks at the default centre (2048).
+fn ns_report(b3: u8, b4: u8, b5: u8) -> Vec<u8> {
+    let mut buf = vec![0u8; 49];
+    buf[0] = 0x30;
+    buf[3] = b3;
+    buf[4] = b4;
+    buf[5] = b5;
+    buf[6..9].copy_from_slice(&[0x00, 0x08, 0x80]);
+    buf[9..12].copy_from_slice(&[0x00, 0x08, 0x80]);
+    buf
+}
+
+#[test]
+fn ns_byte_stream_connected_and_capture() {
+    let (tx, rx) = unbounded::<Vec<u8>>();
+    let mut src = HidSource::new_from_byte_stream_for(ControllerKind::NsPro, rx);
+
+    tx.send(ns_report(0, 0x20, 0)).unwrap(); // Capture held
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let mut out = Vec::new();
+    src.poll(&mut out);
+    assert_eq!(out.first(), Some(&GamepadEvent::Connected(ControllerKind::NsPro)),
+        "expected Connected(NsPro) first, got {out:?}");
+    let downs: Vec<u32> = out.iter().filter_map(|e| match e {
+        GamepadEvent::ButtonDown(id) => Some(*id),
+        _ => None,
+    }).collect();
+    assert_eq!(downs, vec![29], "Capture → id 29 only: {out:?}");
+    assert!(!out.iter().any(|e| matches!(e,
+        GamepadEvent::TouchpadHover { .. } | GamepadEvent::TouchpadClick { .. }
+        | GamepadEvent::MouseDelta { .. })),
+        "no touchpad processing for NsPro: {out:?}");
+}
+
+#[test]
+fn ns_byte_stream_zl_emits_button_and_trigger() {
+    let (tx, rx) = unbounded::<Vec<u8>>();
+    let mut src = HidSource::new_from_byte_stream_for(ControllerKind::NsPro, rx);
+
+    tx.send(ns_report(0, 0, 0)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut out = Vec::new();
+    src.poll(&mut out);
+    assert!(out.contains(&GamepadEvent::Trigger { axis: 4, value: 0.0 }), "{out:?}");
+
+    tx.send(ns_report(0, 0, 0x80)).unwrap(); // ZL down
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    out.clear();
+    src.poll(&mut out);
+    assert!(out.contains(&GamepadEvent::ButtonDown(23)), "missing ButtonDown(23): {out:?}");
+    assert!(out.contains(&GamepadEvent::Trigger { axis: 4, value: 1.0 }), "{out:?}");
+    assert!(!out.iter().any(|e| matches!(e, GamepadEvent::Trigger { axis: 5, .. })), "{out:?}");
+
+    tx.send(ns_report(0, 0, 0)).unwrap(); // ZL up
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    out.clear();
+    src.poll(&mut out);
+    assert!(out.contains(&GamepadEvent::ButtonUp(23)), "missing ButtonUp(23): {out:?}");
+    assert!(out.contains(&GamepadEvent::Trigger { axis: 4, value: 0.0 }), "{out:?}");
+}
+
+#[test]
+fn byte_stream_ignores_other_kinds_reports() {
+    // A DualSense 0x31 frame on the NsPro worker, and a 0x30 frame on the
+    // DualSense worker, decode to nothing (no Connected, no buttons).
+    let (tx, rx) = unbounded::<Vec<u8>>();
+    let mut ns = HidSource::new_from_byte_stream_for(ControllerKind::NsPro, rx);
+    tx.send(neutral_report()).unwrap();
+    let (tx2, rx2) = unbounded::<Vec<u8>>();
+    let mut ds = HidSource::new_from_byte_stream(rx2);
+    tx2.send(ns_report(0xFF, 0xFF, 0xFF)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let mut out = Vec::new();
+    ns.poll(&mut out);
+    ds.poll(&mut out);
+    assert!(out.is_empty(), "foreign reports must not decode: {out:?}");
+}
