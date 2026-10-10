@@ -382,8 +382,46 @@ const SUPPORTED_HID: &[(u16, u16, ControllerKind)] = &[
     (0x057e, 0x2009, ControllerKind::NsPro),
 ];
 
+/// Whether a HID device is one this worker can drive, and as which kind.
+/// The DualSense matches on any bus (unchanged from v2.4.0). The Switch
+/// Pro matches only on Bluetooth: over USB it needs a separate 0x80
+/// handshake (SDL `BTrySetupUSB`) we don't send, so it would never stream
+/// and would hold the worker forever. `BusType::Unknown` (hidapi could not
+/// classify the parent devnode) counts as not Bluetooth.
+fn is_candidate(vid: u16, pid: u16, bus: hidapi::BusType) -> Option<ControllerKind> {
+    let kind = SUPPORTED_HID
+        .iter()
+        .find(|(v, p, _)| vid == *v && pid == *p)
+        .map(|(_, _, kind)| *kind)?;
+    match kind {
+        ControllerKind::NsPro if !matches!(bus, hidapi::BusType::Bluetooth) => None,
+        _ => Some(kind),
+    }
+}
+
+/// First device in enumeration order that `is_candidate` accepts.
+/// Non-candidates are skipped, so a USB Switch Pro listed before a
+/// Bluetooth DualSense doesn't hide the DualSense.
+fn first_candidate<T>(
+    mut devices: impl Iterator<Item = T>,
+    ids: impl Fn(&T) -> (u16, u16, hidapi::BusType),
+) -> Option<(T, ControllerKind)> {
+    devices.find_map(|d| {
+        let (vid, pid, bus) = ids(&d);
+        is_candidate(vid, pid, bus).map(|kind| (d, kind))
+    })
+}
+
 /// Sleep between enumeration attempts in Searching state.
 const ENUM_RETRY_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// Back-off before the next enumeration after a device session ends.
+/// A session that never decoded a report and ended by timeout means an
+/// opened device that doesn't stream; wait `ENUM_RETRY_INTERVAL` before
+/// re-opening it instead of looping on it.
+fn backoff_after(outcome: &str, connected: bool) -> Option<Duration> {
+    (outcome == "timeout" && !connected).then_some(ENUM_RETRY_INTERVAL)
+}
 
 /// Blocking read timeout per HID frame. 4 ms matches BT 250 Hz cadence.
 const READ_TIMEOUT_MS: i32 = 4;
@@ -576,15 +614,10 @@ fn worker_real(
         if let Err(e) = api.refresh_devices() {
             tracing::warn!(error = %e, "hidapi refresh_devices failed");
         }
-        let device = api
-            .device_list()
-            .find_map(|info| {
-                SUPPORTED_HID
-                    .iter()
-                    .find(|(vid, pid, _)| info.vendor_id() == *vid && info.product_id() == *pid)
-                    .map(|(_, _, kind)| (info, *kind))
-            })
-            .and_then(|(info, kind)| info.open_device(&api).ok().map(|d| (d, kind)));
+        let device = first_candidate(api.device_list(), |info| {
+            (info.vendor_id(), info.product_id(), info.bus_type())
+        })
+        .and_then(|(info, kind)| info.open_device(&api).ok().map(|d| (d, kind)));
         match device {
             Some((d, kind)) => {
                 tracing::info!("{} opened, attempting handshake", kind.display_name());
@@ -629,6 +662,12 @@ fn worker_real(
                 }
                 tracing::info!(?outcome, "read loop exited; back to Searching");
                 let _ = tx.send(GamepadEvent::Disconnected);
+                // `last_state` is set only by a decoded report, i.e. exactly
+                // when `Connected` was emitted.
+                if let Some(t) = backoff_after(outcome, last_state.is_some()) {
+                    tracing::info!("{} never streamed; backing off", kind.display_name());
+                    thread::sleep(t);
+                }
             }
             None => {
                 // While Searching with no pad available, still respect
@@ -1054,6 +1093,73 @@ mod tests {
         let now = t0 + Duration::from_millis(60);
         let stable = stable_pos_for_click(&state, now, Duration::from_millis(30));
         assert_eq!(stable, Some((130, 100)));
+    }
+
+    const ALL_BUSES: [hidapi::BusType; 5] = [
+        hidapi::BusType::Unknown,
+        hidapi::BusType::Usb,
+        hidapi::BusType::Bluetooth,
+        hidapi::BusType::I2c,
+        hidapi::BusType::Spi,
+    ];
+
+    #[test]
+    fn is_candidate_ds_any_bus() {
+        // DualSense matching is unchanged from v2.4.0: no bus filter.
+        for bus in ALL_BUSES {
+            assert_eq!(is_candidate(0x054c, 0x0ce6, bus), Some(ControllerKind::DualSense), "{bus:?}");
+        }
+    }
+
+    #[test]
+    fn is_candidate_ns_bluetooth_only() {
+        // A USB-attached 057e:2009 needs the 0x80 USB handshake we don't
+        // send; Unknown is treated as not-Bluetooth.
+        for bus in ALL_BUSES {
+            let want = matches!(bus, hidapi::BusType::Bluetooth).then_some(ControllerKind::NsPro);
+            assert_eq!(is_candidate(0x057e, 0x2009, bus), want, "{bus:?}");
+        }
+        assert_eq!(is_candidate(0x057e, 0x2009, hidapi::BusType::Usb), None);
+        assert_eq!(is_candidate(0x057e, 0x2009, hidapi::BusType::Unknown), None);
+        // Unrelated devices never match.
+        assert_eq!(is_candidate(0x046d, 0xc52b, hidapi::BusType::Usb), None);
+        assert_eq!(is_candidate(0x057e, 0x2006, hidapi::BusType::Bluetooth), None);
+    }
+
+    #[test]
+    fn first_candidate_skips_usb_switch_pro() {
+        // A USB Switch Pro enumerated before a Bluetooth DualSense must not
+        // starve the DualSense (v2.4.0 regression guard).
+        let devs = vec![
+            (0x057e, 0x2009, hidapi::BusType::Usb),
+            (0x046d, 0xc52b, hidapi::BusType::Usb),
+            (0x054c, 0x0ce6, hidapi::BusType::Bluetooth),
+        ];
+        let got = first_candidate(devs.into_iter(), |d| *d);
+        assert_eq!(got.map(|(d, k)| (d.0, k)), Some((0x054c, ControllerKind::DualSense)));
+
+        let devs = vec![(0x057e, 0x2009, hidapi::BusType::Usb)];
+        assert!(first_candidate(devs.into_iter(), |d| *d).is_none());
+
+        let devs = vec![
+            (0x057e, 0x2009, hidapi::BusType::Bluetooth),
+            (0x054c, 0x0ce6, hidapi::BusType::Bluetooth),
+        ];
+        let got = first_candidate(devs.into_iter(), |d| *d);
+        assert_eq!(got.map(|(_, k)| k), Some(ControllerKind::NsPro), "first candidate wins");
+    }
+
+    #[test]
+    fn backoff_only_after_a_dead_session_timeout() {
+        // Opened, never decoded a report, timed out: back off before the
+        // next enumeration so a dead device isn't re-opened in a tight loop.
+        assert_eq!(backoff_after("timeout", false), Some(ENUM_RETRY_INTERVAL));
+        // A pad that streamed and then went quiet is searched for at once.
+        assert_eq!(backoff_after("timeout", true), None);
+        assert_eq!(backoff_after("read-error", false), None);
+        assert_eq!(backoff_after("read-error", true), None);
+        assert_eq!(backoff_after("manual-disconnect", false), None);
+        assert_eq!(backoff_after("stop-signal", false), None);
     }
 }
 
