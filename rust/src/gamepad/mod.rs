@@ -12,6 +12,7 @@ pub mod ds_protocol;
 pub mod hid_source;
 pub mod ns_handshake;
 pub mod ns_protocol;
+pub mod ns2_ble;
 pub mod ns2_protocol;
 pub mod pad;
 
