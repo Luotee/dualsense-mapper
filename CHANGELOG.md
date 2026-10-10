@@ -39,7 +39,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A key held at the moment the controller disconnects can stay held
   (pre-existing, all controllers; the fix follows in the next patch
-  release). (fixed in 2.5.1)
+  release — fixed in 2.5.1).
 
 ### Migration
 

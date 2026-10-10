@@ -82,7 +82,9 @@ fn disconnect_cancels_running_macro() {
     cfg.macros.insert(
         "hold_left".into(),
         MacroDef {
-            repeat: false,
+            // repeat: true so the test fails if Disconnected only releases
+            // held keys without stopping the macro (it would keep re-pressing).
+            repeat: true,
             steps: vec![
                 MacroStep { key: "Left".into(), action: StepAction::Down, delay_ms: [500, 600] },
                 MacroStep { key: "Left".into(), action: StepAction::Up, delay_ms: [15, 25] },
