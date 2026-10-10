@@ -23,14 +23,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`controller-status` event payload gains `kind`.** Existing fields are
-  unchanged.
+- **`controller-status` event payload gains `kind`.** Other existing fields
+  are unchanged.
+- **`transport` is now always `"BT"`** (was `"USB/BT"`) in `controller-status`
+  and `get_controller_status`, since only the BT 0x31 report is decoded; the
+  GUI status line therefore shows "BT".
 - **`get_controller_status` gains `kind` and `warnings`.** Additive only.
 
 ### Migration
 
 - None. `mapping_enabled` is optional; configs without it load with the
-  defaults above and behave exactly as in v2.3.1.
+  defaults above and map exactly as in v2.3.1 (only the `transport` label
+  differs, see Changed).
 
 ## [2.3.1] - 2026-06-07
 

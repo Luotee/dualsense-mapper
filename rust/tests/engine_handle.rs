@@ -92,4 +92,6 @@ fn connected_status_carries_kind() {
     let status = handle.current_status().expect("status after Connected");
     assert_eq!(status.kind, ControllerKind::DualSense);
     assert_eq!(status.name, "DualSense");
+
+    engine.shutdown();
 }

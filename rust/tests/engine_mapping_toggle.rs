@@ -6,7 +6,7 @@
 #[allow(dead_code)] // only load_example() is used here
 mod test_helpers;
 
-use dualsense_mapper::config::{Binding, ButtonEntry, Config, MacroDef, MacroStep, StepAction};
+use dualsense_mapper::config::{Binding, ButtonEntry, Config, MacroDef, MacroStep, MouseButton, StepAction};
 use dualsense_mapper::engine::{Engine, EngineEvent, Handle};
 use dualsense_mapper::gamepad::{ControllerKind, GamepadEvent};
 use std::time::Duration;
@@ -168,6 +168,48 @@ fn no_controller_connected_defaults_to_on() {
     h.fake_button_down(0);
     std::thread::sleep(STEP);
     assert_eq!(h.held_keys_count(), 1, "no controller kind known → mapping ON");
+
+    engine.shutdown();
+}
+
+#[test]
+fn connected_and_press_in_same_batch_do_not_synth_when_off() {
+    let engine = Engine::spawn_with_fake_gamepad(config_with_dualsense(Some(false))).expect("spawn");
+    let h = engine.handle();
+    for _ in 0..20 {
+        h.fake_event(GamepadEvent::Connected(ControllerKind::DualSense));
+        h.fake_button_down(0);
+        std::thread::sleep(Duration::from_millis(30));
+        h.fake_button_up(0);
+        h.fake_event(GamepadEvent::Disconnected);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let events = h.drain_events();
+    assert!(
+        !events.iter().any(|e| matches!(e, EngineEvent::KeyEmit { action: "down", .. })),
+        "first-frame press must not synth while mapping OFF; got: {events:?}"
+    );
+    engine.shutdown();
+}
+
+#[test]
+fn toggle_off_releases_held_mouse_button() {
+    let mut cfg = config_with_dualsense(Some(true));
+    cfg.buttons.insert(
+        "25".into(),
+        ButtonEntry { label: "Touchpad TL".into(), binding: Binding::Mouse(MouseButton::Left) },
+    );
+    let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
+    let h = engine.handle();
+    connect_dualsense(&h);
+
+    h.fake_button_down(25);
+    std::thread::sleep(STEP);
+    let held = |h: &Handle| h.key_state().lock().unwrap_or_else(|p| p.into_inner()).len_held_mouse();
+    assert_eq!(held(&h), 1, "mouse button held while ON");
+
+    set_dualsense_mapping(&h, false);
+    assert_eq!(held(&h), 0, "ON→OFF must release held mouse button");
 
     engine.shutdown();
 }
