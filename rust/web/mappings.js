@@ -116,7 +116,7 @@ function renderChipList() {
   const host = document.getElementById('chip-list');
   if (!host) return;
   host.innerHTML = '';
-  for (let id = 0; id <= 28; id++) {
+  for (let id = 0; id <= 29; id++) {
     const entry = config.buttons[String(id)];
     if (!entry) continue;
     const row = document.createElement('div');
