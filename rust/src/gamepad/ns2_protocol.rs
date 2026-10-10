@@ -12,7 +12,7 @@
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
 
-use super::ns_protocol::AxisCal;
+use super::ns_protocol::{norm, unpack12, AxisCal, StickCal, DEFAULT_CENTER, DEFAULT_SPAN, UNINIT};
 use super::pad::PadState;
 
 pub const NS2_COMPANY_ID: u16 = 0x0553;
@@ -49,9 +49,6 @@ const SPI_RSP_DATA: usize = HEADER_LEN + 8;
 /// Stick record offset inside a factory calibration block.
 const STICK_REC: usize = 0x28;
 const STICK_REC_LEN: usize = 9;
-const DEFAULT_CENTER: u16 = 2048;
-const DEFAULT_SPAN: u16 = 1400;
-const UNINIT: u16 = 0xFFF;
 
 /// Manufacturer-data fields of an NS2 advertisement (company id 0x0553).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,8 +102,10 @@ pub fn classify_advert(ad: &Ns2Advert, local_addr_msb_first: [u8; 6]) -> AdvertM
 }
 
 /// Frame a command: `cmd, 0x91, 0x01, sub, 0x00, len, 0x00, 0x00` + data.
-/// Data beyond 255 bytes is truncated (no command needs more).
+/// `data` must fit the u8 length field (no command needs more than 255
+/// bytes); release builds truncate, debug builds assert.
 pub fn command(cmd: u8, sub: u8, data: &[u8]) -> Vec<u8> {
+    debug_assert!(data.len() <= u8::MAX as usize, "command data {} > 255 bytes", data.len());
     let data = &data[..data.len().min(u8::MAX as usize)];
     let mut out = Vec::with_capacity(HEADER_LEN + data.len());
     out.extend_from_slice(&[cmd, REQ_TYPE, IFACE_BLE, sub, 0x00, data.len() as u8, 0x00, 0x00]);
@@ -126,38 +125,24 @@ pub fn spi_read_cmd(addr: u32, len: u8) -> Vec<u8> {
     command(CMD_SPI, SUB_SPI_READ, &[len, 0x7e, 0x00, 0x00, a[0], a[1], a[2], a[3]])
 }
 
-/// Data bytes of an SPI read response, `None` unless the response is an
-/// SPI read reply carrying all `len` bytes it announces.
-pub fn spi_read_payload(resp: &[u8]) -> Option<&[u8]> {
+/// Data bytes of an SPI read response for `addr`. `None` unless the
+/// response is an SPI read reply that echoes `addr` (so a late reply to an
+/// earlier read is never taken for this one) and carries all `len` bytes
+/// it announces.
+pub fn spi_read_payload(resp: &[u8], addr: u32) -> Option<&[u8]> {
     if !is_response_to(resp, CMD_SPI, SUB_SPI_READ) || resp.len() < SPI_RSP_DATA {
+        return None;
+    }
+    if u32::from_le_bytes([resp[12], resp[13], resp[14], resp[15]]) != addr {
         return None;
     }
     let n = resp[HEADER_LEN] as usize;
     resp.get(SPI_RSP_DATA..SPI_RSP_DATA + n)
 }
 
-/// Per-axis stick calibration (raw 12-bit units).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Ns2StickCal {
-    pub lx: AxisCal,
-    pub ly: AxisCal,
-    pub rx: AxisCal,
-    pub ry: AxisCal,
-}
-
-impl Default for Ns2StickCal {
-    fn default() -> Self {
-        let d = AxisCal { center: DEFAULT_CENTER, span_neg: DEFAULT_SPAN, span_pos: DEFAULT_SPAN };
-        Ns2StickCal { lx: d, ly: d, rx: d, ry: d }
-    }
-}
-
-/// Unpack two 12-bit values from 3 bytes (x low, y high).
-fn unpack12(b: &[u8]) -> (u16, u16) {
-    let x = (b[0] as u16) | (((b[1] & 0x0F) as u16) << 8);
-    let y = ((b[1] >> 4) as u16) | ((b[2] as u16) << 4);
-    (x, y)
-}
+/// Per-axis stick calibration (raw 12-bit units). Same shape and
+/// defaults (centre 2048, span 1400) as the Switch Pro's.
+pub type Ns2StickCal = StickCal;
 
 fn axis(center: u16, neg: u16, pos: u16) -> AxisCal {
     let valid = |v: u16| v != 0 && v != UNINIT;
@@ -196,12 +181,6 @@ pub fn parse_stick_cal(left: &[u8], right: &[u8]) -> Ns2StickCal {
         cal.ry = y;
     }
     cal
-}
-
-fn norm(raw: u16, c: &AxisCal) -> f32 {
-    let d = raw as f32 - c.center as f32;
-    let v = if d >= 0.0 { d / c.span_pos.max(1) as f32 } else { d / c.span_neg.max(1) as f32 };
-    v.clamp(-1.0, 1.0)
 }
 
 /// Decode an input report 0x05 (63 bytes on the wire, no report id).
@@ -545,14 +524,31 @@ mod tests {
             hex("02 91 01 04 00 08 00 00 40 7e 00 00 c0 30 01 00")
         );
         let rx = hex("02 01 01 04 10 78 00 00 10 00 00 00 00 30 01 00 01 00 48 45 4b 31 30 30 30 30 33 38 30 39 34 31");
-        let data = spi_read_payload(&rx).unwrap();
+        let data = spi_read_payload(&rx, 0x13000).unwrap();
         assert_eq!(data.len(), 0x10);
         assert_eq!(&data[2..], b"HEK10000380941" as &[u8]);
         assert_eq!(&data[..2], &[0x01, 0x00]);
         // Truncated payload, wrong command, short header.
-        assert!(spi_read_payload(&rx[..rx.len() - 1]).is_none());
-        assert!(spi_read_payload(&hex("09 01 01 07 10 78 00 00")).is_none());
-        assert!(spi_read_payload(&rx[..12]).is_none());
+        assert!(spi_read_payload(&rx[..rx.len() - 1], 0x13000).is_none());
+        assert!(spi_read_payload(&hex("09 01 01 07 10 78 00 00"), 0x13000).is_none());
+        assert!(spi_read_payload(&rx[..12], 0x13000).is_none());
+    }
+
+    #[test]
+    fn spi_payload_checks_echoed_address() {
+        // Round-2 log, reply to the SPI read of 0x13000.
+        let rx = hex("02 01 01 04 10 78 00 00 10 00 00 00 00 30 01 00 01 00 48 45 4b 31 30 30 30 30 33 38 30 39 34 31");
+        assert!(spi_read_payload(&rx, 0x13000).is_some());
+        // A reply for another read is never taken as the left/right block.
+        assert!(spi_read_payload(&rx, SPI_LEFT_STICK_CAL).is_none());
+        assert!(spi_read_payload(&rx, SPI_RIGHT_STICK_CAL).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "> 255 bytes")]
+    #[cfg(debug_assertions)]
+    fn command_rejects_oversized_data() {
+        command(0x02, 0x04, &[0u8; 256]);
     }
 
     #[test]
