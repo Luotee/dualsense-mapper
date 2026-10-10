@@ -46,7 +46,7 @@ not stage these files; do not bypass the ignore with `git add -f`.
 ```bash
 sudo apt install -y pkg-config libudev-dev   # gilrs Linux backend deps
 cd rust
-cargo test                                    # 192 tests, ~4s
+cargo test                                    # 255 tests, ~10s
 cargo build --release                         # native Linux binary
 ```
 
@@ -203,10 +203,10 @@ These are project-specific invariants. Breaking any of them silently
 regresses real, observed bugs the codebase already fixed once:
 
 1. **`config.rs::Config::validate` must reject any config that does not
-   list every button id `0..=29` (the union of all supported pads' ids).**
+   list every button id `0..=32` (the union of all supported pads' ids).**
    Missing ids are a user error, not a silent skip — except for the
    v2.1.0 touchpad-quadrant additions and the v2.5.0 Capture button
-   (25..=29), which the load path auto-fills as `Unbound` so older
+   and the v2.6.0 Switch 2 Pro additions (25..=32), which the load path auto-fills as `Unbound` so older
    configs continue to parse. The validator itself still requires the
    full range to be present; auto-fill happens before validation, not
    inside it.
@@ -241,10 +241,17 @@ regresses real, observed bugs the codebase already fixed once:
    etc.) or a hat axis (`Axis::DPadX/Y`), and that triggers can be
    reported in `[-1, 1]` or `[0, 1]`. Mapper / keyboard see one
    uniform event surface. Per-kind protocol modules (DualSense, Switch
-   Pro) live in this gamepad layer too. New platform quirks live here.
+   Pro, Switch 2 Pro) and the BLE transport (`ns2_ble.rs`) live in this
+   gamepad layer too, and `SourceHub` arbitrates so that one controller
+   owns the session at a time. New platform quirks live here.
 7. **No process hooking, no DLL injection, no driver.** User-mode
    `SendInput` (Windows) / `CGEvent` (macOS) only, via the `enigo`
    crate. Anything else lands us in actual cheat-software territory.
+   Single exception (v2.6.0): a virtual Xbox 360 pad through an
+   externally installed ViGEmBus, used only for a controller Windows
+   cannot use natively (the Switch 2 Pro, `ControllerKind::needs_virtual_pad`)
+   and only while its mapping is OFF. The app never ships or installs a
+   driver; hooking and injection stay forbidden.
 8. **The exe is double-clicked, not invoked from a terminal.** Primary
    end-user flow on Windows is Explorer → double-click → GUI window
    opens. That means:
@@ -288,7 +295,9 @@ regresses real, observed bugs the codebase already fixed once:
     Streaming) emits `Connected` on the first decoded input
     frame and `Disconnected` on either read-error or a per-kind
     report-stream deadline (DualSense 800 ms, Switch Pro
-    1000 ms). No more `is_connected()` cache, no
+    1000 ms; the Switch 2 Pro over BLE uses the BLE disconnect event or
+    1000 ms without a decoded report). `SourceHub` forwards only the
+    owner's events. No more `is_connected()` cache, no
     more "must press a button to confirm" UX hack — the radio
     link presence is observed directly via report stream
     presence/absence.

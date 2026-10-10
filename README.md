@@ -38,6 +38,7 @@ The Rust build is the recommended path. Python is kept for blame history and bec
 
 - **DualSense PS5 controller** (`054c:0ce6`) over **Bluetooth**.
 - **Nintendo Switch Pro Controller** (`057e:2009`) over **Bluetooth** — pair it in Windows Bluetooth settings first.
+- **Nintendo Switch 2 Pro Controller** over **Bluetooth LE** — the first time, hold the small SYNC button; afterwards any button reconnects. Do **not** pair it in Windows Bluetooth settings (it disconnects). In no-mapping mode (the default for this pad) it needs [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0) and shows up to games as an Xbox controller. Windows 11 is recommended (Windows 10 limits it to ~17 Hz).
 
 Not supported yet:
 

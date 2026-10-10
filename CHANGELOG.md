@@ -3,6 +3,39 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-10-11
+
+### Added
+
+- Nintendo Switch 2 Pro Controller over Bluetooth LE: hold SYNC the first
+  time, afterwards any button reconnects (about 66 Hz on Windows 11).
+- GL / GR / C are bindable as button ids 30 / 31 / 32.
+- Virtual Xbox 360 pad in no-mapping mode (the default for this pad) through
+  an externally installed ViGEmBus. Back buttons, C and Capture are inert
+  there.
+- Turn Off (puts the pad to sleep and disconnects).
+
+### Changed
+
+- One controller at a time: the first to connect is used; another that
+  connects meanwhile takes over when the first disconnects.
+- Iron rule 7 amended: a virtual pad through an externally installed
+  ViGEmBus is allowed for a pad Windows cannot use natively, only while its
+  mapping is OFF.
+- Minimum Rust version is now 1.88.
+
+### Notes
+
+- `ble_rate_limited_win10` warning on Windows 10 (BLE capped at about 17 Hz).
+- `vigem_missing` warning in the controller status when ViGEmBus is absent.
+- macOS support for the Switch 2 Pro: Phase 2 TBD.
+- The GUI still shows the DualSense silhouette (redesign next).
+
+### Migration
+
+- None; ids 30-32 are added to existing configs automatically. Downgrading to
+  2.5.x after ids 30-32 were written makes the old version reject the config.
+
 ## [2.5.1] - 2026-10-11
 
 ### Fixed
