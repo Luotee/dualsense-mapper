@@ -237,7 +237,7 @@ impl Handle {
 
     /// The engine's virtual pad, for the panic hook
     /// (`xinput_sink::register_global`).
-    pub fn virtual_pad(&self) -> Weak<Mutex<Box<dyn VirtualPad>>> {
+    pub(crate) fn virtual_pad(&self) -> Weak<Mutex<Box<dyn VirtualPad>>> {
         self.inner.virtual_pad.clone()
     }
 
@@ -520,7 +520,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                 // The virtual pad mirrors every NS2 Pro event, whatever the
                 // mapping state (it is pushed only while plugged), and is not
                 // gated on key capture: it types nothing.
-                if current_kind == Some(ControllerKind::Ns2Pro) {
+                if current_kind.map_or(false, ControllerKind::needs_virtual_pad) {
                     pad.feed(&ev);
                 }
 
@@ -590,7 +590,7 @@ fn mapping_enabled(h: &HandleInner, kind: Option<ControllerKind>) -> bool {
 /// OFF, and not while paused (no input is forwarded then, so a plugged pad
 /// would freeze whatever it last reported).
 fn wants_pad(paused: bool, mapping_on: bool, kind: Option<ControllerKind>) -> bool {
-    !paused && !mapping_on && kind == Some(ControllerKind::Ns2Pro)
+    !paused && !mapping_on && kind.map_or(false, ControllerKind::needs_virtual_pad)
 }
 
 /// Warnings for `ControllerStatus`: the workers' (process lifetime), then
