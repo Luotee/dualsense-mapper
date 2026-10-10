@@ -387,8 +387,10 @@ const ENUM_RETRY_INTERVAL: Duration = Duration::from_millis(1000);
 
 /// Blocking read timeout per HID frame. 4 ms matches BT 250 Hz cadence.
 const READ_TIMEOUT_MS: i32 = 4;
-/// No decoded report for this long → the DualSense is gone (250 Hz stream).
-const DS_DISCONNECT_AFTER: Duration = Duration::from_millis(200);
+/// No decoded report for this long → the DualSense is gone. Matches the
+/// shipped v2.4 behaviour: 50 × read_timeout(4) ≈ 780 ms on Windows due to
+/// the 15.6 ms timer tick.
+const DS_DISCONNECT_AFTER: Duration = Duration::from_millis(800);
 /// No decoded report for this long → the Switch Pro is gone (~60 Hz stream).
 const NS_DISCONNECT_AFTER: Duration = Duration::from_millis(1000);
 /// Switch Pro simple-HID input report: the pad left full-report mode.
@@ -439,8 +441,12 @@ impl Session {
 
     fn disconnect_after(&self) -> Duration {
         match self.kind {
+            ControllerKind::DualSense => DS_DISCONNECT_AFTER,
             ControllerKind::NsPro => NS_DISCONNECT_AFTER,
-            _ => DS_DISCONNECT_AFTER,
+            // Never opened by this worker (not in SUPPORTED_HID, `decode`
+            // returns None). PR 3 sets its real deadline; until then it
+            // shares the Switch Pro value.
+            ControllerKind::Ns2Pro => NS_DISCONNECT_AFTER,
         }
     }
 
@@ -1140,13 +1146,28 @@ mod read_loop_tests {
     }
 
     #[test]
-    fn ds_deadline_is_200ms() {
+    fn ds_deadline_is_800ms() {
+        // No report at all: gone after ~800 ms, not before.
         let io = ScriptIo::new(vec![]);
         let mut s = Session::new(ControllerKind::DualSense);
         let (outcome, elapsed, _) = run(&io, &mut s);
         assert_eq!(outcome, "timeout");
-        assert!(elapsed >= Duration::from_millis(200), "{elapsed:?}");
-        assert!(elapsed < Duration::from_millis(900), "{elapsed:?}");
+        assert!(elapsed >= Duration::from_millis(800), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1600), "{elapsed:?}");
+
+        // A 500 ms gap between decoded reports (BT interference) is survived.
+        let io = ScriptIo::new(vec![
+            Step::Frame(ds_frame()), Step::Idle(500), Step::Frame(ds_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        assert_eq!(run(&io, &mut s).0, "read-error", "500 ms gap must not disconnect");
+
+        // A 900 ms gap is not (DualSense is tighter than the Switch Pro).
+        let io = ScriptIo::new(vec![
+            Step::Frame(ds_frame()), Step::Idle(900), Step::Frame(ds_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        assert_eq!(run(&io, &mut s).0, "timeout", "900 ms gap must disconnect");
     }
 
     #[test]
@@ -1157,14 +1178,21 @@ mod read_loop_tests {
         assert_eq!(outcome, "timeout");
         assert!(elapsed >= Duration::from_millis(1000), "{elapsed:?}");
         assert!(elapsed < Duration::from_millis(2000), "{elapsed:?}");
+
+        // The 900 ms gap that drops a DualSense is survived by a Switch Pro.
+        let io = ScriptIo::new(vec![
+            Step::Frame(ns_frame()), Step::Idle(900), Step::Frame(ns_frame()), Step::Error,
+        ]);
+        let mut s = Session::new(ControllerKind::NsPro);
+        assert_eq!(run(&io, &mut s).0, "read-error", "900 ms gap must not disconnect");
     }
 
     #[test]
     fn decoded_frame_resets_deadline_undecoded_does_not() {
-        // Decoded 0x31 frames 150 ms apart keep a DualSense alive past 200 ms.
+        // Decoded 0x31 frames 600 ms apart keep a DualSense alive past 800 ms.
         let io = ScriptIo::new(vec![
-            Step::Frame(ds_frame()), Step::Idle(150),
-            Step::Frame(ds_frame()), Step::Idle(150),
+            Step::Frame(ds_frame()), Step::Idle(600),
+            Step::Frame(ds_frame()), Step::Idle(600),
             Step::Frame(ds_frame()), Step::Error,
         ]);
         let mut s = Session::new(ControllerKind::DualSense);
@@ -1176,7 +1204,7 @@ mod read_loop_tests {
         let mut junk = ds_frame();
         junk[0] = 0x01;
         let io = ScriptIo::new(vec![
-            Step::Idle(150), Step::Frame(junk), Step::Idle(100), Step::Error,
+            Step::Idle(600), Step::Frame(junk), Step::Idle(300), Step::Error,
         ]);
         let mut s = Session::new(ControllerKind::DualSense);
         let (outcome, _, events) = run(&io, &mut s);
