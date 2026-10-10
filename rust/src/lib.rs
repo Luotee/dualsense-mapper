@@ -10,3 +10,5 @@ pub mod mapper;
 pub mod platform;
 pub mod safety;
 pub mod app;
+pub mod virtual_pad;
+pub mod xinput_sink;

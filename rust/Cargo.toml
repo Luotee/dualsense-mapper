@@ -37,13 +37,16 @@ tauri = { version = "2", features = ["tray-icon", "image-ico", "devtools"], opti
 tauri-plugin-single-instance = { version = "2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Devices_Bluetooth", "Win32_System_IO", "Wdk_System_SystemServices", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Devices_Bluetooth", "Win32_System_IO", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_Input_XboxController"] }
 # Switch 2 Pro BLE worker (gamepad/ns2_ble.rs). btleplug 0.13.4 is the
 # version proven on Win11 hardware; the worker runs its own current-thread
 # tokio runtime on a dedicated std thread.
 btleplug = "0.13.4"
 tokio = { version = "1", features = ["rt", "time", "macros"] }
 futures = "0.3"
+# Virtual Xbox 360 pad for the Switch 2 Pro in no-mapping mode
+# (xinput_sink.rs). User-mode client of an externally installed ViGEmBus.
+vigem-client = "0.1"
 
 [features]
 default = []

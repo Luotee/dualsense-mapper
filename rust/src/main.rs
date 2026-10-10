@@ -154,6 +154,8 @@ fn real_main(cli: &Cli) -> Result<()> {
         if let Err(e) = safety::emergency_release_all() {
             eprintln!("emergency key release failed: {e:#}");
         }
+        // No virtual Xbox pad may outlive a panic with a frozen state.
+        dualsense_mapper::xinput_sink::emergency_unplug();
         panic_default(info);
     }));
 
