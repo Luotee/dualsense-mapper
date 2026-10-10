@@ -224,7 +224,10 @@ regresses real, observed bugs the codebase already fixed once:
    against stuck keys / stuck mouse buttons when the process dies or the
    controller drops. `release_all_held` releases every held key **and**
    every held mouse button, and never waits on `min_press_ms` —
-   shutdown beats anti-cheat profile.
+   shutdown beats anti-cheat profile. The virtual Xbox pad (Switch 2 Pro,
+   no-mapping mode) is likewise unplugged on Disconnected, pause, shutdown
+   and in the panic hook (`emergency_unplug`); `vigem-client` also unplugs
+   on Drop.
 4. **Macro threads drain every unmatched `Press` as `Release` on every
    exit path** (cancel flag, no-repeat completion, channel close). A
    macro cancelled between Press Left and the scheduled Release Left
@@ -414,5 +417,6 @@ shipped three broken releases under admin override — don't repeat it.
 - Features that lock the binary to one OS without a clear story
   for the other (Phase 2 macOS is the explicit target — don't add
   Windows-only behaviour without a `#[cfg(target_os = "macos")]`
-  counterpart or a deliberate "Phase 2 TBD" CHANGELOG note).
+  counterpart or a deliberate "Phase 2 TBD" CHANGELOG note). The Switch 2
+  Pro (BLE + virtual pad) is such a Phase 2 TBD item on macOS.
 - Tracking `docs/superpowers/` content.

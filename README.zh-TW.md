@@ -38,7 +38,7 @@
 
 - **DualSense PS5 控制器**（`054c:0ce6`），走 **Bluetooth**。
 - **Nintendo Switch Pro 控制器**（`057e:2009`），走 **Bluetooth**——請先在 Windows 的藍牙設定裡完成配對。
-- **Nintendo Switch 2 Pro 控制器**，走 **Bluetooth LE**——第一次連線請按住小小的 SYNC 鍵；之後按任何鍵即可重新連線。**不要**在 Windows 藍牙設定裡配對（會斷線）。不映射模式（此手把的預設）需要安裝 [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)，遊戲會把它當成 Xbox 手把。建議使用 Windows 11（Windows 10 會被限制在約 17 Hz）。
+- **Nintendo Switch 2 Pro 控制器**，走 **Bluetooth LE**——第一次連線請按住小小的 SYNC 鍵；之後按任何鍵即可重新連線。**不要**在 Windows 藍牙設定裡配對（會斷線）。不映射模式（此手把的預設）需要安裝 [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)，遊戲會把它當成 Xbox 手把。建議使用 Windows 11（Windows 10 會被限制在約 17 Hz）。Switch 2 Pro 預設為不映射模式，因此按鍵綁定（含 GL/GR/C，id 30/31/32）要把 `mapping_enabled.ns2_pro` 設為 true 才會生效。`vigem_missing` 與 `ble_rate_limited_win10` 警告目前只出現在 controller-status 的 payload 與 log 裡，GUI 還不會顯示（隨 UX 改版加入）。若遊戲在不映射模式（預設）下收不到 Switch 2 Pro 的輸入，請安裝 [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)，或把 `mapping_enabled.ns2_pro` 改成 true。
 
 目前還不支援：
 

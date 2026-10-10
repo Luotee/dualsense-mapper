@@ -17,8 +17,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- One controller at a time: the first to connect is used; another that
-  connects meanwhile takes over when the first disconnects.
+- One controller at a time: the first to connect is used. When the Switch 2
+  Pro is in use, a DualSense / Switch Pro that connects meanwhile takes over
+  after it disconnects. While a DualSense / Switch Pro is in use the app
+  pauses Switch 2 Pro scanning, so press a button on the Switch 2 Pro again
+  after the other controller disconnects.
 - Iron rule 7 amended: a virtual pad through an externally installed
   ViGEmBus is allowed for a pad Windows cannot use natively, only while its
   mapping is OFF.
@@ -26,8 +29,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Notes
 
-- `ble_rate_limited_win10` warning on Windows 10 (BLE capped at about 17 Hz).
-- `vigem_missing` warning in the controller status when ViGEmBus is absent.
+- `ble_rate_limited_win10` (Windows 10, BLE capped at about 17 Hz) and
+  `vigem_missing` (ViGEmBus absent) warnings are reported only in the
+  controller-status IPC/event payload and the log. The GUI does not display
+  them yet (that comes with the UX redesign). If a game gets no input from
+  the Switch 2 Pro in no-mapping mode (the default), install
+  [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)
+  or set `mapping_enabled.ns2_pro` to true.
 - macOS support for the Switch 2 Pro: Phase 2 TBD.
 - The GUI still shows the DualSense silhouette (redesign next).
 

@@ -10,7 +10,7 @@
     "Switch 2 Pro (Bluetooth LE): hold SYNC the first time; afterwards any button reconnects. Do NOT pair it in Windows Bluetooth settings. GL=30 GR=31 C=32; mapping_enabled.ns2_pro=false makes it a virtual Xbox pad (needs ViGEmBus).",
     "Set 'touchpad_cursor_enabled' to false to disable the cursor; sensitivity is in [0.1, 10.0].",
     "'touchpad_midpoint_x' / 'touchpad_midpoint_y' set the quadrant boundary in raw pad coords (default 960/540 = centre of a 1920x1080 pad). If the wrong quadrant fires on click, watch the debug dot in the GUI to see the captured raw position, then tune these values.",
-    "mapping_enabled: per-controller switch. true = buttons go through this mapping; false = the app sends nothing and the game reads the controller directly.",
+    "mapping_enabled: per-controller switch. true = buttons go through this mapping; false = for DualSense / Switch Pro the app sends nothing and the game reads the controller directly; the Switch 2 Pro instead becomes a virtual Xbox pad (needs ViGEmBus).",
     "Restart the exe after editing — there is no hot reload in v0.1.x.",
     "Fields starting with '_' are documentation only and ignored by the program."
   ],
