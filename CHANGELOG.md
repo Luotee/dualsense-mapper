@@ -3,6 +3,40 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-10-11
+
+### Added
+
+- **Nintendo Switch Pro Controller over Bluetooth.** Pair it in Windows
+  Bluetooth settings first; after that it connects like the DualSense.
+  Mapping is positional: B maps to the Cross slot (id 0), A to Circle (1),
+  Y to Square (2), X to Triangle (3), -/Home/+ to 4/5/6, L/R to 9/10,
+  ZL/ZR to 23/24, sticks and D-pad as on the DualSense, so one binding
+  table works on either pad.
+- **Capture button = new button id 29.** Auto-added to existing configs as
+  `Unbound` and shown in the mappings list as "Capture（Switch 擷取鍵）".
+- **Turn Off for the Switch Pro** (sleep command plus Bluetooth link
+  disconnect; the pairing is kept).
+- **Stick calibration is read from the pad** for the Switch Pro.
+
+### Changed
+
+- **Disconnect detection is a per-controller deadline** (DualSense 800 ms,
+  the same as before in practice; Switch Pro 1 s).
+- The GUI still draws the DualSense silhouette for every pad (a redesign is
+  coming).
+
+### Known issues
+
+- A key held at the moment the controller disconnects can stay held
+  (pre-existing, all controllers; the fix follows in the next patch
+  release).
+
+### Migration
+
+- None. Button id 29 is auto-filled as `Unbound` in existing configs.
+  macOS: Switch Pro support is Phase 2 TBD.
+
 ## [2.4.0] - 2026-10-10
 
 ### Added

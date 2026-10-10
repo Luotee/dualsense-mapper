@@ -46,7 +46,7 @@ not stage these files; do not bypass the ignore with `git add -f`.
 ```bash
 sudo apt install -y pkg-config libudev-dev   # gilrs Linux backend deps
 cd rust
-cargo test                                    # 138 tests, ~0.2s
+cargo test                                    # 178 tests, ~4s
 cargo build --release                         # native Linux binary
 ```
 
@@ -203,9 +203,10 @@ These are project-specific invariants. Breaking any of them silently
 regresses real, observed bugs the codebase already fixed once:
 
 1. **`config.rs::Config::validate` must reject any config that does not
-   list every button id `0..=28`.** Missing ids are a user error, not a
-   silent skip — except for the v2.1.0 touchpad-quadrant additions
-   (25..=28), which the load path auto-fills as `Unbound` so v2.0
+   list every button id `0..=29` (the union of all supported pads' ids).**
+   Missing ids are a user error, not a silent skip — except for the
+   v2.1.0 touchpad-quadrant additions and the v2.5.0 Capture button
+   (25..=29), which the load path auto-fills as `Unbound` so older
    configs continue to parse. The validator itself still requires the
    full range to be present; auto-fill happens before validation, not
    inside it.
@@ -238,7 +239,8 @@ regresses real, observed bugs the codebase already fixed once:
    that knows D-pad can be either discrete buttons (`Button::DPadLeft`
    etc.) or a hat axis (`Axis::DPadX/Y`), and that triggers can be
    reported in `[-1, 1]` or `[0, 1]`. Mapper / keyboard see one
-   uniform event surface. New platform quirks live here.
+   uniform event surface. Per-kind protocol modules (DualSense, Switch
+   Pro) live in this gamepad layer too. New platform quirks live here.
 7. **No process hooking, no DLL injection, no driver.** User-mode
    `SendInput` (Windows) / `CGEvent` (macOS) only, via the `enigo`
    crate. Anything else lands us in actual cheat-software territory.
@@ -282,10 +284,10 @@ regresses real, observed bugs the codebase already fixed once:
     HID, not heuristic.** v2.0.0 replaced the gilrs path with
     `hidapi` against the DualSense BT 0x31 report. The HID
     worker thread's state machine (Searching → Handshaking →
-    Streaming) emits `Connected` on the first decoded 0x31
-    frame and `Disconnected` on either read-error or
-    `DISCONNECT_AFTER_TIMEOUTS` (50) consecutive 4 ms read
-    timeouts (~200 ms). No more `is_connected()` cache, no
+    Streaming) emits `Connected` on the first decoded input
+    frame and `Disconnected` on either read-error or a per-kind
+    report-stream deadline (DualSense 800 ms, Switch Pro
+    1000 ms). No more `is_connected()` cache, no
     more "must press a button to confirm" UX hack — the radio
     link presence is observed directly via report stream
     presence/absence.
