@@ -7,13 +7,18 @@
 //! * The first source to emit `Connected` becomes the owner. While an owner
 //!   exists, every event from the other source is dropped, its
 //!   `Connected` / `Disconnected` included.
-//! * The owner's `Disconnected` ends the ownership. A source whose
-//!   `Connected` was dropped stays ignored until it disconnects and connects
-//!   again (its pad state never reached the engine, so its later events
-//!   would be diffs against nothing).
+//! * The owner's `Disconnected` ends the ownership. If the other source is
+//!   connected but ignored (it sent `Connected` while the owner held the
+//!   session, and no `Disconnected` since), it is promoted at once: the hub
+//!   emits a synthetic `Connected(kind)` with the kind it announced, right
+//!   after the old owner's `Disconnected`, and passes its later events
+//!   through. Buttons it already held are not replayed (the workers send
+//!   diffs only), so the engine sees them released until their next change
+//!   — the safe direction: never a phantom press.
 //! * A `Disconnected` from a non-owner, or with no owner, is dropped: there
 //!   is no session to end (the HID worker reports one after every attempt,
-//!   even one that never connected).
+//!   even one that never connected). An ignored source that disconnects is
+//!   simply no longer waiting.
 //! * With no owner, other events pass through (the engine's fake source in
 //!   tests sends buttons without `Connected`).
 //! * A manual disconnect reaches only the owner's worker; with no owner it
@@ -29,6 +34,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
+use super::controller::ControllerKind;
 use super::cursor_params::CursorParams;
 use super::events::GamepadEvent;
 use super::hid_source::HidSource;
@@ -55,14 +61,16 @@ struct Slot {
     disconnect_tx: Option<Sender<()>>,
     /// Set while another source owns the session (`None`: not suspendable).
     suspend: Option<Arc<AtomicBool>>,
-    /// The source has a session open (sent `Connected`, no `Disconnected`
-    /// yet), whether or not it owns.
-    live: bool,
+    /// The kind the source announced while its session is open (sent
+    /// `Connected`, no `Disconnected` yet), whether or not it owns. A
+    /// non-owner with `Some` is connected but ignored: promoted when the
+    /// owner leaves.
+    session: Option<ControllerKind>,
 }
 
 impl Slot {
     fn new(src: Src, disconnect_tx: Option<Sender<()>>, suspend: Option<Arc<AtomicBool>>) -> Self {
-        Slot { src, disconnect_tx, suspend, live: false }
+        Slot { src, disconnect_tx, suspend, session: None }
     }
 }
 
@@ -131,9 +139,7 @@ impl SourceHub {
             scratch.clear();
             self.slots[i].src.poll(&mut scratch);
             for ev in scratch.drain(..) {
-                if self.admit(i, &ev) {
-                    out.push(ev);
-                }
+                self.admit(i, ev, out);
             }
         }
         self.scratch = scratch;
@@ -154,12 +160,12 @@ impl SourceHub {
         }
     }
 
-    /// Ownership bookkeeping for one event of source `i`; true if it
-    /// reaches the engine.
-    fn admit(&mut self, i: usize, ev: &GamepadEvent) -> bool {
-        match ev {
-            GamepadEvent::Connected(_) => {
-                self.slots[i].live = true;
+    /// Ownership bookkeeping for one event of source `i`; pushes to `out`
+    /// what reaches the engine.
+    fn admit(&mut self, i: usize, ev: GamepadEvent, out: &mut Vec<GamepadEvent>) {
+        let pass = match ev {
+            GamepadEvent::Connected(kind) => {
+                self.slots[i].session = Some(kind);
                 match self.owner {
                     None => {
                         self.owner = Some(i);
@@ -167,25 +173,40 @@ impl SourceHub {
                     }
                     Some(o) => {
                         if o != i {
-                            tracing::info!(?ev, "another controller owns the session; ignoring this one");
+                            tracing::info!(?kind, "another controller owns the session; ignoring this one");
                         }
                         o == i
                     }
                 }
             }
             GamepadEvent::Disconnected => {
-                self.slots[i].live = false;
+                self.slots[i].session = None;
                 if self.owner == Some(i) {
+                    out.push(ev);
                     self.owner = None;
-                    true
-                } else {
-                    false
+                    self.promote_waiting(out);
                 }
+                return;
             }
             _ => match self.owner {
                 Some(o) => o == i,
-                None => !self.slots[i].live,
+                None => self.slots[i].session.is_none(),
             },
+        };
+        if pass {
+            out.push(ev);
+        }
+    }
+
+    /// The owner just left: hand the session to a connected-but-ignored
+    /// source, announcing it with the kind it reported.
+    fn promote_waiting(&mut self, out: &mut Vec<GamepadEvent>) {
+        if let Some((j, kind)) =
+            self.slots.iter().enumerate().find_map(|(j, s)| s.session.map(|k| (j, k)))
+        {
+            tracing::info!(?kind, "previous controller left; the waiting one takes over");
+            self.owner = Some(j);
+            out.push(GamepadEvent::Connected(kind));
         }
     }
 
@@ -326,22 +347,106 @@ mod tests {
         send(&b, &[NS2]);
         assert_eq!(poll(&mut hub), vec![DS]);
 
-        // `a` leaves. `b`'s session began while `a` owned, so the engine
-        // never saw its Connected: it stays ignored, even with no owner.
-        send(&a, &[OFF]);
-        assert_eq!(poll(&mut hub), vec![OFF]);
-        send(&b, &[GamepadEvent::ButtonDown(1), GamepadEvent::Stick { axis: 1, value: -1.0 }]);
+        // `b`'s connected-but-ignored session ends while `a` owns.
+        send(&b, &[OFF]);
         assert_eq!(poll(&mut hub), vec![]);
 
-        // Once `b` disconnects and connects again, it owns.
-        send(&b, &[OFF]);
-        assert_eq!(poll(&mut hub), vec![], "no-owner Disconnected is dropped");
+        // `a` leaves with nobody waiting: no owner.
+        send(&a, &[OFF]);
+        assert_eq!(poll(&mut hub), vec![OFF]);
+
+        // `b` connects again and owns.
         send(&b, &[NS2, GamepadEvent::ButtonDown(1)]);
         assert_eq!(poll(&mut hub), vec![NS2, GamepadEvent::ButtonDown(1)]);
 
         // And `a` is now the ignored one.
         send(&a, &[DS, GamepadEvent::ButtonDown(0)]);
         assert_eq!(poll(&mut hub), vec![]);
+    }
+
+    #[test]
+    fn ignored_pad_promoted_when_owner_disconnects() {
+        // BLE owner leaves → the ignored HID pad takes over.
+        let (a, a_rx) = unbounded();
+        let (b, b_rx) = unbounded();
+        let mut hub = SourceHub::from_fakes(a_rx, b_rx);
+        send(&b, &[NS2]);
+        assert_eq!(poll(&mut hub), vec![NS2]);
+        send(&a, &[DS, GamepadEvent::ButtonDown(0)]);
+        assert_eq!(poll(&mut hub), vec![]);
+        send(&b, &[GamepadEvent::ButtonDown(30), OFF]);
+        // Owner's Disconnected first (engine releases), then the waiting
+        // pad's Connected with the kind it announced. Its held button 0 is
+        // not replayed.
+        assert_eq!(poll(&mut hub), vec![GamepadEvent::ButtonDown(30), OFF, DS]);
+        send(&a, &[GamepadEvent::ButtonUp(0), GamepadEvent::ButtonDown(2)]);
+        assert_eq!(poll(&mut hub), vec![GamepadEvent::ButtonUp(0), GamepadEvent::ButtonDown(2)]);
+        // `b` is now the non-owner.
+        send(&b, &[NS2, GamepadEvent::ButtonDown(31)]);
+        assert_eq!(poll(&mut hub), vec![]);
+
+        // HID owner leaves → the ignored BLE pad takes over (same tick:
+        // `a` is polled first, so its Disconnected is seen before `b`'s events).
+        send(&a, &[OFF]);
+        send(&b, &[GamepadEvent::ButtonUp(31)]);
+        assert_eq!(poll(&mut hub), vec![OFF, NS2, GamepadEvent::ButtonUp(31)]);
+        // Kind is the announced one (a Switch Pro on HID, say).
+        let (a, a_rx) = unbounded();
+        let (b, b_rx) = unbounded();
+        let mut hub = SourceHub::from_fakes(a_rx, b_rx);
+        send(&b, &[NS2]);
+        poll(&mut hub);
+        send(&a, &[GamepadEvent::Connected(ControllerKind::NsPro)]);
+        poll(&mut hub);
+        send(&b, &[OFF]);
+        assert_eq!(poll(&mut hub), vec![OFF, GamepadEvent::Connected(ControllerKind::NsPro)]);
+    }
+
+    #[test]
+    fn ignored_pad_that_disconnected_is_not_promoted() {
+        let (a, a_rx) = unbounded();
+        let (b, b_rx) = unbounded();
+        let mut hub = SourceHub::from_fakes(a_rx, b_rx);
+        send(&a, &[DS]);
+        send(&b, &[NS2, GamepadEvent::ButtonDown(30), OFF]);
+        assert_eq!(poll(&mut hub), vec![DS], "ignored pad's Disconnected emits nothing");
+        send(&a, &[OFF]);
+        assert_eq!(poll(&mut hub), vec![OFF], "nobody waiting: no synthetic Connected");
+        // `b` sends nothing more until it reconnects; a fresh session owns.
+        send(&b, &[NS2]);
+        assert_eq!(poll(&mut hub), vec![NS2]);
+    }
+
+    #[test]
+    fn promotion_updates_ble_suspend() {
+        // HID promoted → BLE suspended.
+        let mut r = rig();
+        send(&r.b, &[NS2]);
+        poll(&mut r.hub);
+        assert!(!r.b_suspend.load(Ordering::SeqCst), "BLE owns: not suspended");
+        send(&r.a, &[DS]);
+        poll(&mut r.hub);
+        assert!(!r.b_suspend.load(Ordering::SeqCst), "BLE still owns");
+        send(&r.b, &[OFF]);
+        assert_eq!(poll(&mut r.hub), vec![OFF, DS]);
+        assert!(r.b_suspend.load(Ordering::SeqCst), "HID promoted: BLE suspended");
+
+        // BLE promoted → BLE not suspended.
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        poll(&mut r.hub);
+        assert!(r.b_suspend.load(Ordering::SeqCst));
+        // A BLE session already under way when HID took over.
+        send(&r.b, &[NS2]);
+        poll(&mut r.hub);
+        send(&r.a, &[OFF]);
+        assert_eq!(poll(&mut r.hub), vec![OFF, NS2]);
+        assert!(!r.b_suspend.load(Ordering::SeqCst), "BLE promoted: not suspended");
+        // Manual disconnect now goes to the promoted owner only.
+        r.disconnect.send(()).unwrap();
+        poll(&mut r.hub);
+        assert_eq!(r.b_dc.try_iter().count(), 1);
+        assert_eq!(r.a_dc.try_iter().count(), 0);
     }
 
     #[test]
@@ -362,11 +467,9 @@ mod tests {
         assert_eq!(r.b_dc.try_iter().count(), 1);
         assert_eq!(r.a_dc.try_iter().count(), 0, "a connected-but-ignored pad stays on");
 
-        // `b` goes; `a` reconnects and owns: only `a` is told.
+        // `b` goes; the waiting `a` is promoted and owns: only `a` is told.
         send(&r.b, &[OFF]);
-        assert_eq!(poll(&mut r.hub), vec![OFF]);
-        send(&r.a, &[OFF, DS]);
-        assert_eq!(poll(&mut r.hub), vec![DS]);
+        assert_eq!(poll(&mut r.hub), vec![OFF, DS]);
         r.disconnect.send(()).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.a_dc.try_iter().count(), 1);
