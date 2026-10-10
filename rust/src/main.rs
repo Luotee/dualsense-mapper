@@ -291,7 +291,7 @@ fn list_buttons(cfg: Option<Config>) -> Result<()> {
         source.poll(&mut buf);
         for ev in buf.drain(..) {
             match ev {
-                GamepadEvent::Connected    => println!("🎮 Connected"),
+                GamepadEvent::Connected(_) => println!("🎮 Connected"),
                 GamepadEvent::Disconnected => println!("🎮 Disconnected"),
                 GamepadEvent::ButtonDown(id) =>
                     println!("  [button] id={id:<3} down       label: {:?}", label_for(id)),

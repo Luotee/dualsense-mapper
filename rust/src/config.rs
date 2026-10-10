@@ -31,6 +31,10 @@ pub struct Config {
     pub touchpad_deadzone_radius: u32,
     #[serde(default = "default_touchpad_click_freeze_enabled")]
     pub touchpad_click_freeze_enabled: bool,
+    /// Per-controller mapping switch, keyed by `ControllerKind::slug()`.
+    /// Missing key → `ControllerKind::default_mapping_enabled()`.
+    #[serde(default)]
+    pub mapping_enabled: BTreeMap<String, bool>,
 }
 
 fn default_touchpad_cursor_enabled() -> bool { true }
@@ -139,6 +143,13 @@ impl Config {
         }
     }
 
+    pub fn mapping_enabled_for(&self, kind: crate::gamepad::ControllerKind) -> bool {
+        self.mapping_enabled
+            .get(kind.slug())
+            .copied()
+            .unwrap_or_else(|| kind.default_mapping_enabled())
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {
             bail!("unsupported config version {}; expected 1", self.version);
@@ -191,6 +202,11 @@ impl Config {
                 "touchpad_deadzone_radius must be <= 50, got {}",
                 self.touchpad_deadzone_radius
             );
+        }
+        for slug in self.mapping_enabled.keys() {
+            if crate::gamepad::ControllerKind::from_slug(slug).is_none() {
+                bail!("mapping_enabled has unknown controller slug {slug:?}");
+            }
         }
         for id in VALID_BUTTON_IDS {
             let key = id.to_string();
@@ -522,6 +538,7 @@ mod tests {
             touchpad_accel_gain_fast: 1.5,
             touchpad_deadzone_radius: 2,
             touchpad_click_freeze_enabled: true,
+            mapping_enabled: Default::default(),
         }
     }
 
@@ -609,6 +626,7 @@ mod tests {
             touchpad_accel_gain_fast: 1.5,
             touchpad_deadzone_radius: 2,
             touchpad_click_freeze_enabled: true,
+            mapping_enabled: Default::default(),
         }
     }
 
@@ -687,5 +705,44 @@ mod tests {
         assert!((cfg.touchpad_accel_gain_fast - 1.5).abs() < 1e-6);
         assert_eq!(cfg.touchpad_deadzone_radius, 2);
         assert!(cfg.touchpad_click_freeze_enabled);
+    }
+
+    fn minimal_json_with(extra: &str) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(r#"{
+            "version": 1, "deadzone": 0.4, "trigger_threshold": 0.5,
+            "min_press_ms": [8, 25], "tick_jitter_ms": [0, 3],
+            "log_events": false, "buttons": {}, "macros": {}
+        }"#).unwrap();
+        for id in 0u32..=28 {
+            v["buttons"][id.to_string()] = serde_json::json!({"label": "", "type": "unbound"});
+        }
+        if !extra.is_empty() {
+            let e: serde_json::Value = serde_json::from_str(extra).unwrap();
+            v["mapping_enabled"] = e;
+        }
+        serde_json::to_string(&v).unwrap()
+    }
+
+    #[test]
+    fn mapping_enabled_missing_uses_defaults() {
+        use crate::gamepad::ControllerKind;
+        let cfg = Config::load_from_str(&minimal_json_with("")).unwrap();
+        assert!(cfg.mapping_enabled_for(ControllerKind::DualSense));
+        assert!(!cfg.mapping_enabled_for(ControllerKind::Ns2Pro));
+    }
+
+    #[test]
+    fn mapping_enabled_explicit_value_wins() {
+        use crate::gamepad::ControllerKind;
+        let cfg = Config::load_from_str(&minimal_json_with(r#"{"dualsense": false}"#)).unwrap();
+        assert!(!cfg.mapping_enabled_for(ControllerKind::DualSense));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_mapping_slug() {
+        let mut cfg = Config::load_from_str(&minimal_json_with("")).unwrap();
+        cfg.mapping_enabled.insert("ps5".to_string(), true);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("ps5") && err.contains("mapping_enabled"), "got: {err}");
     }
 }

@@ -4,6 +4,7 @@
 use crossbeam_channel::unbounded;
 use dualsense_mapper::gamepad::cursor_params::CursorParams;
 use dualsense_mapper::gamepad::events::GamepadEvent;
+use dualsense_mapper::gamepad::ControllerKind;
 use dualsense_mapper::gamepad::hid_source::HidSource;
 
 fn neutral_report() -> Vec<u8> {
@@ -36,7 +37,7 @@ fn first_streaming_frame_emits_connected() {
 
     let mut out = Vec::new();
     src.poll(&mut out);
-    assert_eq!(out.first(), Some(&GamepadEvent::Connected),
+    assert_eq!(out.first(), Some(&GamepadEvent::Connected(ControllerKind::DualSense)),
         "expected Connected first, got {out:?}");
 }
 

@@ -3,6 +3,39 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-10-10
+
+### Added
+
+- **Per-controller `mapping_enabled` config field.** A new optional
+  `mapping_enabled` object (`dualsense`, `ns_pro`, `ns2_pro`) lets you turn
+  key synthesis off for one controller kind while the GUI keeps showing its
+  live input. Defaults: `dualsense` and `ns_pro` true, `ns2_pro` false.
+  Turning a kind off releases every key and mouse button it still holds
+  (the `safety.rs` path), so nothing sticks. There is no capsule UI yet (it
+  comes later); edit the field in `dualsense-mapper.json` while the app is
+  running.
+- **`set_mapping_enabled` IPC command.** Mutates the field and emits
+  `config-changed` itself, per the IPC-mutator iron rule.
+- **Controller abstraction groundwork for Nintendo Switch Pro / Switch 2 Pro.**
+  `Connected` now carries a `ControllerKind` and HID matching goes through a
+  table. macOS support for NS Pro / NS2 Pro is Phase 2 TBD.
+
+### Changed
+
+- **`controller-status` event payload gains `kind`.** Other existing fields
+  are unchanged.
+- **`transport` is now always `"BT"`** (was `"USB/BT"`) in `controller-status`
+  and `get_controller_status`, since only the BT 0x31 report is decoded; the
+  GUI status line therefore shows "BT".
+- **`get_controller_status` gains `kind` and `warnings`.** Additive only.
+
+### Migration
+
+- None. `mapping_enabled` is optional; configs without it load with the
+  defaults above and map exactly as in v2.3.1 (only the `transport` label
+  differs, see Changed).
+
 ## [2.3.1] - 2026-06-07
 
 ### Fixed

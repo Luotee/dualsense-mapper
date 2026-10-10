@@ -12,6 +12,7 @@
 
 use super::cursor_params::CursorParams;
 use super::ds_protocol::{build_handshake_buffer, decode_31, DsState, REPORT_LEN_BT};
+use super::controller::ControllerKind;
 use super::events::GamepadEvent;
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -368,10 +369,10 @@ fn process_touchpad(
     state.prev_touchpad_btn = cur.touchpad_btn;
 }
 
-/// Sony Computer Entertainment.
-const DS_VID: u16 = 0x054c;
-/// DualSense (standard PS5 pad).
-const DS_PID: u16 = 0x0ce6;
+/// Supported HID devices: (vendor id, product id, controller kind).
+/// 0x054c / 0x0ce6 = Sony DualSense (standard PS5 pad).
+const SUPPORTED_HID: &[(u16, u16, ControllerKind)] =
+    &[(0x054c, 0x0ce6, ControllerKind::DualSense)];
 
 /// Sleep between enumeration attempts in Searching state.
 const ENUM_RETRY_INTERVAL: Duration = Duration::from_millis(1000);
@@ -481,17 +482,22 @@ fn worker_real(
         }
         let device = api
             .device_list()
-            .find(|info| info.vendor_id() == DS_VID && info.product_id() == DS_PID)
-            .and_then(|info| info.open_device(&api).ok());
+            .find_map(|info| {
+                SUPPORTED_HID
+                    .iter()
+                    .find(|(vid, pid, _)| info.vendor_id() == *vid && info.product_id() == *pid)
+                    .map(|(_, _, kind)| (info, *kind))
+            })
+            .and_then(|(info, kind)| info.open_device(&api).ok().map(|d| (d, kind)));
         match device {
-            Some(d) => {
+            Some((d, kind)) => {
                 tracing::info!("DualSense opened, attempting 0x31 handshake");
                 let _ = try_handshake(&d);
                 let mut prev_buttons = [false; 25];
                 let mut last_state: Option<DsState> = None;
                 let mut touchpad = TouchpadState::default();
                 let outcome = read_loop(
-                    d, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
+                    d, kind, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
                     &params, &stop, &disconnect_rx,
                 );
                 // The HID handle (`d`) was moved into read_loop and is now
@@ -528,6 +534,7 @@ fn try_handshake(d: &hidapi::HidDevice) -> Result<()> {
 
 fn read_loop(
     d: hidapi::HidDevice,
+    kind: ControllerKind,
     tx: &Sender<GamepadEvent>,
     last_state: &mut Option<DsState>,
     prev_buttons: &mut [bool; 25],
@@ -555,7 +562,7 @@ fn read_loop(
                 consecutive_timeouts = 0;
                 if let Some(s) = decode_31(&buf) {
                     if !emitted_connected {
-                        let _ = tx.send(GamepadEvent::Connected);
+                        let _ = tx.send(GamepadEvent::Connected(kind));
                         emitted_connected = true;
                     }
                     diff_emit(last_state.as_ref(), &s, prev_buttons, tx);
@@ -605,7 +612,7 @@ fn worker_byte_stream(
                     Ok(buf) => {
                         if let Some(s) = decode_31(&buf) {
                             if !emitted_connected {
-                                let _ = tx.send(GamepadEvent::Connected);
+                                let _ = tx.send(GamepadEvent::Connected(ControllerKind::DualSense));
                                 emitted_connected = true;
                             }
                             diff_emit(last_state.as_ref(), &s, &mut prev_buttons, &tx);
@@ -625,7 +632,7 @@ fn worker_byte_stream(
                 Ok(buf) => {
                     if let Some(s) = decode_31(&buf) {
                         if !emitted_connected {
-                            let _ = tx.send(GamepadEvent::Connected);
+                            let _ = tx.send(GamepadEvent::Connected(ControllerKind::DualSense));
                             emitted_connected = true;
                         }
                         diff_emit(last_state.as_ref(), &s, &mut prev_buttons, &tx);
