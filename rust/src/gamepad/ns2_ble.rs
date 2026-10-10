@@ -3,7 +3,9 @@
 //! Windows: `Ns2BleSource` spawns one std thread ("ns2-ble") that runs a
 //! current-thread tokio runtime driving btleplug through
 //! Scanning → Connecting → Initializing → Streaming, and back to Scanning
-//! on any failure, lost link or manual disconnect. The hardware-proven
+//! on any failure, lost link or manual disconnect. A scan with no matching
+//! advert is restarted every 30 s, because btleplug never reports a WinRT
+//! watcher that Windows aborted (Bluetooth off/on, sleep/wake). The hardware-proven
 //! connect sequence (spec §12) is: `connect()`, *immediately*
 //! `request_connection_parameters(ThroughputOptimized)`, 500 ms pause,
 //! `discover_services()`, response notify, optional `0x15` pairing,
@@ -36,6 +38,17 @@ pub const WARN_BLE_RATE_LIMITED_WIN10: &str = "ble_rate_limited_win10";
 
 /// First Windows 11 build.
 const FIRST_UNLIMITED_BUILD: u32 = 22000;
+
+/// A scan with no matching advert for this long is stopped and restarted.
+pub(crate) const SCAN_RESTART_AFTER: Duration = Duration::from_secs(30);
+
+/// Turn Off, exactly as hardware-proven (spike round 2): after the 06/02
+/// write, wait up to this long for a response (none is expected) ...
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const TURN_OFF_RESPONSE_WAIT: Duration = Duration::from_millis(1500);
+/// ... then this long before dropping the BLE link.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const TURN_OFF_SETTLE: Duration = Duration::from_millis(1000);
 
 /// Pads worth connecting to: an NS2 Pro advert (company `0x0553`) that is
 /// bonded to this adapter or in pairing mode. `local_msb_first` is the
@@ -91,6 +104,15 @@ pub(crate) enum SessionEnd {
     TurnedOff,
     /// The source was dropped.
     Stopped,
+    /// A scan saw no matching advert for `SCAN_RESTART_AFTER`.
+    ScanRestart,
+}
+
+/// True once a scan started at `started` should be stopped and started
+/// again (the WinRT watcher may have been aborted silently).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn scan_should_restart(started: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(started) >= SCAN_RESTART_AFTER
 }
 
 /// Pause before scanning again. Never zero after a failure, so a pad that
@@ -103,7 +125,7 @@ pub(crate) fn rescan_delay(end: SessionEnd) -> Duration {
         // Long enough that the pad we just turned off is asleep before we
         // look again (it may still advertise for a moment).
         SessionEnd::TurnedOff => Duration::from_secs(3),
-        SessionEnd::Stopped => Duration::ZERO,
+        SessionEnd::Stopped | SessionEnd::ScanRestart => Duration::ZERO,
     }
 }
 
@@ -113,6 +135,25 @@ pub(crate) fn ble_rate_limited(build: u32) -> bool {
     build < FIRST_UNLIMITED_BUILD
 }
 
+/// The status warning to send when an NS2 Pro first connects, given the
+/// Windows build (`None` = unknown → no warning).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn rate_limit_warning(build: Option<u32>) -> Option<&'static str> {
+    build.filter(|&b| ble_rate_limited(b)).map(|_| WARN_BLE_RATE_LIMITED_WIN10)
+}
+
+/// Outcome of one input notification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum Report {
+    /// Too short to decode; ignored (does not feed the watchdog).
+    Undecoded,
+    /// Decoded; events emitted.
+    Decoded,
+    /// The first decoded report: `Connected(Ns2Pro)` was emitted with it.
+    First,
+}
+
 /// Per-connection input state: decodes 0x05 reports, emits the event
 /// diff, and keeps iron rule 11 — `Connected` on the first decoded report,
 /// `Disconnected` only if `Connected` was sent.
@@ -120,6 +161,8 @@ pub(crate) fn ble_rate_limited(build: u32) -> bool {
 pub(crate) struct InputStream {
     cal: Ns2StickCal,
     announced: bool,
+    /// `Disconnected` already emitted (manual disconnect finishes early).
+    finished: bool,
     prev: Option<PadState>,
     prev_buttons: [bool; BUTTON_SLOTS],
     watchdog: Option<Watchdog>,
@@ -128,7 +171,14 @@ pub(crate) struct InputStream {
 #[cfg_attr(not(windows), allow(dead_code))]
 impl InputStream {
     pub(crate) fn new(cal: Ns2StickCal) -> Self {
-        InputStream { cal, announced: false, prev: None, prev_buttons: [false; BUTTON_SLOTS], watchdog: None }
+        InputStream {
+            cal,
+            announced: false,
+            finished: false,
+            prev: None,
+            prev_buttons: [false; BUTTON_SLOTS],
+            watchdog: None,
+        }
     }
 
     pub(crate) fn set_cal(&mut self, cal: Ns2StickCal) {
@@ -154,13 +204,14 @@ impl InputStream {
         self.watchdog.map(|w| w.remaining(now))
     }
 
-    /// Handle one input notification. Returns whether it decoded; only a
-    /// decoded report feeds the watchdog.
-    pub(crate) fn on_report(&mut self, buf: &[u8], now: Instant, tx: &Sender<GamepadEvent>) -> bool {
+    /// Handle one input notification. Only a decoded report feeds the
+    /// watchdog.
+    pub(crate) fn on_report(&mut self, buf: &[u8], now: Instant, tx: &Sender<GamepadEvent>) -> Report {
         let Some(s) = decode_05(buf, &self.cal) else {
-            return false;
+            return Report::Undecoded;
         };
-        if !self.announced {
+        let first = !self.announced;
+        if first {
             let _ = tx.send(GamepadEvent::Connected(ControllerKind::Ns2Pro));
             self.announced = true;
         }
@@ -169,13 +220,18 @@ impl InputStream {
         if let Some(w) = self.watchdog.as_mut() {
             w.feed(now);
         }
-        true
+        if first {
+            Report::First
+        } else {
+            Report::Decoded
+        }
     }
 
-    /// Session over: `Disconnected` iff `Connected` was sent.
-    pub(crate) fn finish(&self, tx: &Sender<GamepadEvent>) {
-        if self.announced {
+    /// Session over: `Disconnected` iff `Connected` was sent, at most once.
+    pub(crate) fn finish(&mut self, tx: &Sender<GamepadEvent>) {
+        if self.announced && !self.finished {
             let _ = tx.send(GamepadEvent::Disconnected);
+            self.finished = true;
         }
     }
 }
@@ -193,16 +249,17 @@ impl Ns2BleSource {
     /// Spawn the BLE worker thread. It emits nothing until a pad's first
     /// decoded report. `disconnect_rx` carries manual disconnect requests
     /// (ignored while no pad is connected); `warn_tx` receives status
-    /// warnings (`WARN_BLE_RATE_LIMITED_WIN10`, at most once).
+    /// warnings (`WARN_BLE_RATE_LIMITED_WIN10`, at most once per process,
+    /// when an NS2 Pro first connects on Windows 10).
     pub fn new(disconnect_rx: Receiver<()>, warn_tx: Sender<String>) -> anyhow::Result<Self> {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
         let (tx, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(AtomicBool::new(false));
-        let ctx = imp::Ctx { tx, stop: stop.clone(), disconnect_rx };
+        let ctx = imp::Ctx { tx, stop: stop.clone(), disconnect_rx, warn_tx, build: None };
         std::thread::Builder::new()
             .name("ns2-ble".into())
-            .spawn(move || imp::run(ctx, warn_tx))
+            .spawn(move || imp::run(ctx))
             .map_err(|e| anyhow::anyhow!("spawning NS2 BLE worker thread: {e}"))?;
         Ok(Self { rx, stop })
     }
@@ -256,9 +313,6 @@ mod imp {
     const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1500);
     /// After the connection-parameter request (hardware-proven value).
     const PARAMS_SETTLE: Duration = Duration::from_millis(500);
-    /// Between the turn-off command and dropping the link, so the
-    /// write-without-response leaves the radio first.
-    const TURN_OFF_SETTLE: Duration = Duration::from_millis(500);
     const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
     const ADAPTER_RETRY: Duration = Duration::from_secs(2);
     const LED_PLAYER_1: [u8; 8] = [0x01, 0, 0, 0, 0, 0, 0, 0];
@@ -270,11 +324,30 @@ mod imp {
         pub(super) tx: Sender<GamepadEvent>,
         pub(super) stop: Arc<AtomicBool>,
         pub(super) disconnect_rx: Receiver<()>,
+        pub(super) warn_tx: Sender<String>,
+        /// Windows build, read once at thread start.
+        pub(super) build: Option<u32>,
     }
+
+    /// The Win10 warning goes out at most once per process.
+    static RATE_WARNED: AtomicBool = AtomicBool::new(false);
 
     impl Ctx {
         fn stopped(&self) -> bool {
             self.stop.load(Ordering::SeqCst)
+        }
+
+        /// An NS2 Pro just connected: warn if this Windows rate-limits BLE.
+        fn on_first_connect(&self) {
+            if let Some(w) = rate_limit_warning(self.build) {
+                if !RATE_WARNED.swap(true, Ordering::SeqCst) {
+                    tracing::warn!(
+                        build = ?self.build,
+                        "Windows 10 BLE stack: Switch 2 Pro report rate is limited"
+                    );
+                    let _ = self.warn_tx.try_send(w.to_string());
+                }
+            }
         }
 
         /// A manual disconnect while no pad is connected is a no-op.
@@ -297,14 +370,10 @@ mod imp {
     }
 
     /// Thread body.
-    pub(super) fn run(ctx: Ctx, warn_tx: Sender<String>) {
-        match windows_build() {
-            Some(b) if ble_rate_limited(b) => {
-                tracing::warn!(build = b, "Windows 10 BLE stack: Switch 2 Pro report rate is limited");
-                let _ = warn_tx.send(WARN_BLE_RATE_LIMITED_WIN10.to_string());
-            }
-            Some(_) => {}
-            None => tracing::warn!("could not read the Windows build number"),
+    pub(super) fn run(mut ctx: Ctx) {
+        ctx.build = windows_build();
+        if ctx.build.is_none() {
+            tracing::warn!("could not read the Windows build number");
         }
         let rt = match tokio::runtime::Builder::new_current_thread().enable_time().build() {
             Ok(rt) => rt,
@@ -363,7 +432,8 @@ mod imp {
             let b = ble.as_mut().expect("opened above");
             let end = match session(ctx, b).await {
                 Ok(end) => {
-                    if end != SessionEnd::Failed {
+                    // A pad streamed: the next failure is news again.
+                    if matches!(end, SessionEnd::LinkLost | SessionEnd::TurnedOff) {
                         last_err.clear();
                     }
                     end
@@ -436,9 +506,13 @@ mod imp {
 
     /// One scan → connect → stream cycle.
     async fn session(ctx: &Ctx, ble: &mut Ble) -> std::result::Result<SessionEnd, Fault> {
-        let scanned = scan(ctx, ble).await.map_err(|err| Fault { adapter: true, err })?;
-        let Some((p, m)) = scanned else {
-            return Ok(SessionEnd::Stopped);
+        let (p, m) = match scan(ctx, ble).await.map_err(|err| Fault { adapter: true, err })? {
+            Scan::Found(p, m) => (p, m),
+            Scan::Stopped => return Ok(SessionEnd::Stopped),
+            Scan::Restart => {
+                tracing::debug!("NS2 BLE: no advert for {SCAN_RESTART_AFTER:?}; restarting the scan");
+                return Ok(SessionEnd::ScanRestart);
+            }
         };
         tracing::info!(addr = %p.address(), mode = ?m, "NS2 Pro advert accepted; connecting");
         let mut input = InputStream::new(Ns2StickCal::default());
@@ -466,20 +540,34 @@ mod imp {
         }
     }
 
-    /// Scan until an acceptable advert. `None` when stopped.
-    async fn scan(ctx: &Ctx, ble: &mut Ble) -> Result<Option<(Peripheral, AdvertMatch)>> {
+    enum Scan {
+        Found(Peripheral, AdvertMatch),
+        Stopped,
+        /// `SCAN_RESTART_AFTER` without a matching advert.
+        Restart,
+    }
+
+    /// One bounded scan: until an acceptable advert, a stop, or
+    /// `SCAN_RESTART_AFTER`. The watcher is always stopped on exit, so a
+    /// restart is a fresh `start_scan` (btleplug never surfaces a watcher
+    /// that WinRT aborted on Bluetooth off/on or sleep/wake).
+    async fn scan(ctx: &Ctx, ble: &mut Ble) -> Result<Scan> {
         ble.adapter.start_scan(ScanFilter::default()).await.context("start_scan")?;
         let found = scan_until_match(ctx, ble).await;
         let _ = ble.adapter.stop_scan().await;
         found
     }
 
-    async fn scan_until_match(ctx: &Ctx, ble: &mut Ble) -> Result<Option<(Peripheral, AdvertMatch)>> {
+    async fn scan_until_match(ctx: &Ctx, ble: &mut Ble) -> Result<Scan> {
+        let started = Instant::now();
         loop {
             // Checked every iteration: adverts from nearby devices can
             // arrive faster than `TICK`.
             if ctx.stopped() {
-                return Ok(None);
+                return Ok(Scan::Stopped);
+            }
+            if scan_should_restart(started, Instant::now()) {
+                return Ok(Scan::Restart);
             }
             ctx.drain_disconnects();
             let ev = match tokio::time::timeout(TICK, ble.events.next()).await {
@@ -490,7 +578,7 @@ mod imp {
             if let CentralEvent::ManufacturerDataAdvertisement { id, manufacturer_data } = ev {
                 if let Some(m) = accept_advert(&manufacturer_data, ble.local) {
                     let p = ble.adapter.peripheral(&id).await.context("peripheral lookup")?;
-                    return Ok(Some((p, m)));
+                    return Ok(Scan::Found(p, m));
                 }
             }
         }
@@ -512,9 +600,19 @@ mod imp {
             pkt: &[u8],
             done: impl Fn(&[u8]) -> bool,
         ) -> Result<Vec<u8>> {
+            self.request_within(ctx, pkt, RESPONSE_TIMEOUT, done).await
+        }
+
+        async fn request_within(
+            &mut self,
+            ctx: &Ctx,
+            pkt: &[u8],
+            wait: Duration,
+            done: impl Fn(&[u8]) -> bool,
+        ) -> Result<Vec<u8>> {
             let (cmd, sub) = (pkt[0], pkt[3]);
             self.send(ctx, pkt).await?;
-            let end = Instant::now() + RESPONSE_TIMEOUT;
+            let end = Instant::now() + wait;
             loop {
                 if ctx.stopped() {
                     bail!("command {cmd:#04x}/{sub:#04x}: stopped");
@@ -610,6 +708,8 @@ mod imp {
                 return Ok(SessionEnd::Stopped);
             }
             if ctx.disconnect_rx.try_recv().is_ok() && input.announced() {
+                // Release held keys now, not after the ~2.5 s turn-off.
+                input.finish(&ctx.tx);
                 turn_off(ctx, link).await;
                 return Ok(SessionEnd::TurnedOff);
             }
@@ -622,7 +722,9 @@ mod imp {
             tokio::select! {
                 n = link.notes.next() => match n {
                     Some(n) if n.uuid.as_u128() == UUID_INPUT => {
-                        input.on_report(&n.value, Instant::now(), &ctx.tx);
+                        if input.on_report(&n.value, Instant::now(), &ctx.tx) == Report::First {
+                            ctx.on_first_connect();
+                        }
                     }
                     Some(_) => {}
                     None => bail!("notification stream closed"),
@@ -640,16 +742,21 @@ mod imp {
         }
     }
 
-    /// Manual disconnect: command 0x06/0x02 (no response expected), then
-    /// drop the BLE link. Best effort; the link goes down either way.
-    async fn turn_off(ctx: &Ctx, link: &Link<'_>) {
+    /// Manual disconnect, replicating the hardware-proven spike exactly:
+    /// write 0x06/0x02, wait up to `TURN_OFF_RESPONSE_WAIT` for a response
+    /// (none is the expected outcome), sleep `TURN_OFF_SETTLE`, then drop
+    /// the BLE link. Best effort; the link goes down either way.
+    async fn turn_off(ctx: &Ctx, link: &mut Link<'_>) {
         tracing::info!("NS2 Pro: manual disconnect — turning the pad off");
         let off = command(CMD_POWER, SUB_POWER_OFF, &[0u8; 12]);
-        if let Err(e) = link.send(ctx, &off).await {
-            tracing::warn!(error = %format!("{e:#}"), "NS2 BLE: turn-off command failed");
-        } else {
-            pause(ctx, TURN_OFF_SETTLE).await;
+        let done = |r: &[u8]| is_response_to(r, CMD_POWER, SUB_POWER_OFF);
+        match link.request_within(ctx, &off, TURN_OFF_RESPONSE_WAIT, done).await {
+            Ok(_) => tracing::debug!("NS2 Pro: turn-off acknowledged"),
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "NS2 Pro: turn-off not acknowledged (expected)")
+            }
         }
+        pause(ctx, TURN_OFF_SETTLE).await;
         match tokio::time::timeout(CLEANUP_TIMEOUT, link.p.disconnect()).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => tracing::warn!(error = %e, "NS2 BLE: disconnect failed"),
@@ -803,6 +910,32 @@ mod tests {
         // A turned-off pad must not be re-grabbed while it goes to sleep.
         assert_eq!(rescan_delay(SessionEnd::TurnedOff), Duration::from_secs(3));
         assert_eq!(rescan_delay(SessionEnd::Stopped), Duration::ZERO);
+        // A routine scan restart is not a failure: no pause.
+        assert_eq!(rescan_delay(SessionEnd::ScanRestart), Duration::ZERO);
+    }
+
+    #[test]
+    fn scan_restarts_every_30_s() {
+        assert_eq!(SCAN_RESTART_AFTER, Duration::from_secs(30));
+        let t0 = Instant::now();
+        assert!(!scan_should_restart(t0, t0));
+        assert!(!scan_should_restart(t0, t0 + Duration::from_millis(29_999)));
+        assert!(scan_should_restart(t0, t0 + Duration::from_secs(30)));
+        assert!(scan_should_restart(t0, t0 + Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn turn_off_timing_matches_spike() {
+        // Spike round 2: 06/02 TX, "no response" after 1.5 s, 1000 ms, disconnect.
+        assert_eq!(TURN_OFF_RESPONSE_WAIT, Duration::from_millis(1500));
+        assert_eq!(TURN_OFF_SETTLE, Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn rate_limit_warning_only_for_known_win10_builds() {
+        assert_eq!(rate_limit_warning(Some(19045)), Some(WARN_BLE_RATE_LIMITED_WIN10));
+        assert_eq!(rate_limit_warning(Some(22631)), None);
+        assert_eq!(rate_limit_warning(None), None, "unknown build: no warning");
     }
 
     #[test]
@@ -822,7 +955,7 @@ mod tests {
         assert!(!s.announced());
 
         let mut report = hex(R2_FIRST_REPORT);
-        assert!(s.on_report(&report, t0 + Duration::from_millis(15), &tx));
+        assert_eq!(s.on_report(&report, t0 + Duration::from_millis(15), &tx), Report::First);
         let evs: Vec<GamepadEvent> = rx.try_iter().collect();
         assert_eq!(evs[0], GamepadEvent::Connected(ControllerKind::Ns2Pro));
         assert_eq!(evs.iter().filter(|e| matches!(e, GamepadEvent::Connected(_))).count(), 1);
@@ -832,7 +965,7 @@ mod tests {
 
         // B pressed: only the diff, no second Connected.
         report[4] = 0x04;
-        assert!(s.on_report(&report, t0 + Duration::from_millis(30), &tx));
+        assert_eq!(s.on_report(&report, t0 + Duration::from_millis(30), &tx), Report::Decoded);
         let evs: Vec<GamepadEvent> = rx.try_iter().collect();
         assert_eq!(evs, vec![GamepadEvent::ButtonDown(0)]);
 
@@ -847,7 +980,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = InputStream::new(Ns2StickCal::default());
         s.arm(t0);
-        assert!(!s.on_report(&[0u8; 15], t0 + Duration::from_millis(500), &tx));
+        assert_eq!(s.on_report(&[0u8; 15], t0 + Duration::from_millis(500), &tx), Report::Undecoded);
         assert_eq!(rx.try_iter().count(), 0, "no Connected without a decoded report");
         assert!(!s.announced());
         // An undecodable report does not feed the watchdog.
@@ -858,7 +991,7 @@ mod tests {
     fn input_stream_disconnected_only_after_connected() {
         let (tx, rx) = unbounded();
         let t0 = Instant::now();
-        let s = InputStream::new(Ns2StickCal::default());
+        let mut s = InputStream::new(Ns2StickCal::default());
         s.finish(&tx);
         assert_eq!(rx.try_iter().count(), 0, "never connected → no Disconnected");
 
@@ -868,6 +1001,10 @@ mod tests {
         let _ = rx.try_iter().count();
         s.finish(&tx);
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![GamepadEvent::Disconnected]);
+        // Manual disconnect finishes early (before the turn-off sequence);
+        // the session-end finish must not emit a second Disconnected.
+        s.finish(&tx);
+        assert_eq!(rx.try_iter().count(), 0, "Disconnected is emitted once");
     }
 
     #[test]
