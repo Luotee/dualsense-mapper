@@ -395,6 +395,14 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
                         current_kind = None;
                         *h.current_status.write().unwrap() = None;
                         let _ = h.event_tx.send(EngineEvent::ControllerDisconnected);
+                        // The pad is gone, so no ButtonUp / stick-neutral will
+                        // ever arrive for what it was holding: release it all
+                        // now (iron rules 2–4), as on pause / mapping ON→OFF.
+                        drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+                        // Forget the stick / trigger virtual state too: the
+                        // next session's first frame reports every axis, and a
+                        // stale `virt_active` would swallow that press.
+                        mapper = Mapper::new(mapper.config().clone());
                     }
                     _ => {}
                 }
