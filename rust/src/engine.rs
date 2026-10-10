@@ -327,18 +327,17 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
     let mut last_paused = false;
     let mut gp_events: Vec<crate::gamepad::GamepadEvent> = Vec::with_capacity(32);
 
+    // Per-controller mapping gate. `None` (no controller seen yet, or after
+    // Disconnected) means mapping ON.
+    let mut current_kind: Option<ControllerKind> = None;
+    let mut mapping_on = true;
+
     while !h.shutdown.load(Ordering::SeqCst) {
         // ── Pause / unpause edge ─────────────────────────────────────────────
         let paused = h.paused.load(Ordering::SeqCst);
         if paused && !last_paused {
             // Drain all macros and held keys when pausing.
-            macros.stop_all();
-            // Drain macro-emitted releases so sink's refcounts are balanced.
-            while let Ok(action) = macro_rx.try_recv() {
-                execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
-            }
-            sink.release_all_held();
-            mouse_sink.release_all_held();
+            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
         }
         last_paused = paused;
 
@@ -349,6 +348,13 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
             mapper = Mapper::new(cfg.clone());
             last_config_gen = current_gen;
         }
+
+        // ── Mapping ON→OFF edge: release everything ──────────────────────────
+        let now_on = mapping_enabled(&h, current_kind);
+        if mapping_on && !now_on {
+            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+        }
+        mapping_on = now_on;
 
         if !paused {
             // ── Poll gamepad ─────────────────────────────────────────────────
@@ -378,8 +384,15 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
                             transport: status.transport,
                             kind,
                         });
+                        current_kind = Some(kind);
+                        let now_on = mapping_enabled(&h, current_kind);
+                        if mapping_on && !now_on {
+                            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+                        }
+                        mapping_on = now_on;
                     }
                     crate::gamepad::GamepadEvent::Disconnected => {
+                        current_kind = None;
                         *h.current_status.write().unwrap() = None;
                         let _ = h.event_tx.send(EngineEvent::ControllerDisconnected);
                     }
@@ -402,12 +415,21 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
                     };
                 }
                 for action in &actions {
+                    // Mapping OFF: keep the touchpad diagnostics, synthesize nothing.
+                    if !mapping_on && !is_diagnostic(action) {
+                        continue;
+                    }
                     execute_action(action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
                 }
             }
 
             // ── Drain macro-emitted key actions ──────────────────────────────
             while let Ok(action) = macro_rx.try_recv() {
+                // Mapping OFF: a macro cancelled on the ON→OFF edge may still
+                // race a late Press/Release in; drop it (sink was already reset).
+                if !mapping_on && !is_diagnostic(&action) {
+                    continue;
+                }
                 execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
             }
         }
@@ -426,6 +448,39 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
     drop(sink);
     drop(mouse_sink);
     Ok(())
+}
+
+/// Whether mapping is ON for the connected controller. Reads the live config
+/// (not the mapper's snapshot) so an IPC toggle takes effect on the next tick.
+/// No known controller → ON.
+fn mapping_enabled(h: &HandleInner, kind: Option<ControllerKind>) -> bool {
+    kind.map_or(true, |k| h.config.read().unwrap().mapping_enabled_for(k))
+}
+
+/// Actions that synthesize no input — the only ones executed while mapping
+/// is OFF.
+fn is_diagnostic(action: &KeyAction) -> bool {
+    matches!(action, KeyAction::TouchpadClick { .. } | KeyAction::TouchpadHover { .. })
+}
+
+/// Stop every macro, run the releases they drain, then release every held
+/// key and mouse button (iron rules 2–4). Shared by the pause edge and the
+/// mapping ON→OFF edge.
+fn drain_and_release(
+    macros: &mut MacroEngine,
+    macro_rx: &std::sync::mpsc::Receiver<KeyAction>,
+    sink: &mut KeyboardSink,
+    mouse_sink: &mut MouseSink,
+    cfg: &Config,
+    event_tx: &Sender<EngineEvent>,
+) {
+    macros.stop_all();
+    // Drain macro-emitted releases so sink's refcounts are balanced.
+    while let Ok(action) = macro_rx.try_recv() {
+        execute_action(&action, sink, mouse_sink, macros, cfg, event_tx);
+    }
+    sink.release_all_held();
+    mouse_sink.release_all_held();
 }
 
 fn execute_action(
