@@ -10,6 +10,7 @@ pub mod cursor_params;
 pub mod events;
 pub mod ds_protocol;
 pub mod hid_source;
+pub mod ns_protocol;
 pub mod pad;
 
 pub use controller::ControllerKind;
