@@ -37,6 +37,7 @@
 ## 支援的硬體
 
 - **DualSense PS5 控制器**（`054c:0ce6`），走 **Bluetooth**。
+- **Nintendo Switch Pro 控制器**（`057e:2009`），走 **Bluetooth**——請先在 Windows 的藍牙設定裡完成配對。
 
 目前還不支援：
 

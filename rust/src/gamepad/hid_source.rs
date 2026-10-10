@@ -508,9 +508,9 @@ pub struct HidSource {
 
 impl HidSource {
     /// Spawn the production hidapi worker. The worker thread starts in
-    /// `Searching` and emits no events until the first 0x31 frame is
-    /// decoded. `params` carries the live touchpad cursor sensitivity
-    /// and on/off flag; the engine mutates them through `set_settings`.
+    /// `Searching` and emits no events until the first decoded report.
+    /// `params` carries the live touchpad cursor sensitivity and on/off
+    /// flag; the engine mutates them through `set_settings`.
     /// `disconnect_rx` receives manual disconnect signals from the GUI
     /// (Task 13 wires the actual state transition; ignored here with `_` prefix).
     pub fn new(params: CursorParams, disconnect_rx: crossbeam_channel::Receiver<()>) -> Result<Self> {

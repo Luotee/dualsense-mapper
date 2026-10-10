@@ -22,7 +22,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **Disconnect detection is a per-controller deadline** (DualSense 800 ms,
-  the same as before in practice; Switch Pro 1 s).
+  matches the ~780 ms measured on Windows for every release since v2.0.0;
+  Switch Pro 1 s).
 - The GUI still draws the DualSense silhouette for every pad (a redesign is
   coming).
 
@@ -36,6 +37,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - None. Button id 29 is auto-filled as `Unbound` in existing configs.
   macOS: Switch Pro support is Phase 2 TBD.
+- Downgrading to v2.4.x after the app has written button id 29 makes v2.4.x
+  reject the config (unknown id 29) — remove the `"29"` entry first.
 
 ## [2.4.0] - 2026-10-10
 

@@ -37,6 +37,7 @@ The Rust build is the recommended path. Python is kept for blame history and bec
 ## Supported hardware
 
 - **DualSense PS5 controller** (`054c:0ce6`) over **Bluetooth**.
+- **Nintendo Switch Pro Controller** (`057e:2009`) over **Bluetooth** — pair it in Windows Bluetooth settings first.
 
 Not supported yet:
 
