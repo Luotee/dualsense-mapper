@@ -18,11 +18,14 @@
 //! * A `Disconnected` from a non-owner, or with no owner, is dropped: there
 //!   is no session to end (the HID worker reports one after every attempt,
 //!   even one that never connected). An ignored source that disconnects is
-//!   simply no longer waiting.
+//!   simply no longer waiting. This holds for the single-source test fake
+//!   too: engine tests must send `Connected` before a `Disconnected` they
+//!   want the engine to see.
 //! * With no owner, other events pass through (the engine's fake source in
 //!   tests sends buttons without `Connected`).
 //! * A manual disconnect reaches only the owner's worker; with no owner it
-//!   is dropped.
+//!   is dropped. It is routed by `service`, which the engine calls every
+//!   tick even while paused (when it does not `poll`).
 //! * While a source owns the session, a source that can be suspended (the
 //!   BLE worker) is told to stop scanning: a continuous BLE scan shares the
 //!   radio with the DualSense's Bluetooth link, and its finds would be
@@ -107,10 +110,28 @@ impl SourceHub {
     }
 
     /// Test-only: a hub over one fake source that drains `GamepadEvent`s
-    /// from `rx`. No manual disconnect routing.
+    /// from `rx`. No manual disconnect routing. The ownership rules still
+    /// apply: a `Disconnected` with no prior `Connected` is dropped, so a
+    /// test that wants the engine's disconnect handling must send
+    /// `Connected` first.
     #[doc(hidden)]
     pub fn fake(rx: Receiver<GamepadEvent>) -> Self {
         Self::from_slots(vec![Slot::new(Src::Hid(HidSource::fake(rx)), None, None)], None)
+    }
+
+    /// Test-only: `fake` plus manual disconnect routing — requests on
+    /// `disconnect_rx` are forwarded to `source_disconnect_tx` while the
+    /// fake source owns the session.
+    #[doc(hidden)]
+    pub fn fake_with_disconnect(
+        rx: Receiver<GamepadEvent>,
+        disconnect_rx: Receiver<()>,
+        source_disconnect_tx: Sender<()>,
+    ) -> Self {
+        Self::from_slots(
+            vec![Slot::new(Src::Hid(HidSource::fake(rx)), Some(source_disconnect_tx), None)],
+            Some(disconnect_rx),
+        )
     }
 
     /// Test-only: a hub over two fake sources (`a` polled first, `b`
@@ -130,8 +151,17 @@ impl SourceHub {
         SourceHub { slots, owner: None, disconnect_rx, scratch: Vec::with_capacity(32) }
     }
 
+    /// Control work that must not wait for `poll`: forward pending manual
+    /// disconnects to the owner and re-sync the suspend flags. The engine
+    /// calls it every tick, paused or not (it skips `poll` while paused,
+    /// and Turn Off stays clickable then). Idempotent; non-blocking.
+    pub fn service(&mut self) {
+        self.route_disconnects();
+        self.sync_suspend();
+    }
+
     /// Drain pending events of the owning source (or of any source while
-    /// none owns) into `out`. Non-blocking.
+    /// none owns) into `out`. Non-blocking. Also does `service`'s work.
     pub fn poll(&mut self, out: &mut Vec<GamepadEvent>) {
         self.route_disconnects();
         let mut scratch = std::mem::take(&mut self.scratch);
@@ -477,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_routed_without_poll() {
+        // The engine skips `poll` while paused but still calls `service`.
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        assert_eq!(poll(&mut r.hub), vec![DS]);
+        send(&r.a, &[GamepadEvent::ButtonDown(0)]);
+        r.disconnect.send(()).unwrap();
+        r.hub.service();
+        assert_eq!(r.a_dc.try_iter().count(), 1, "owner told without a poll");
+        assert_eq!(r.b_dc.try_iter().count(), 0);
+        // `service` routes control only; events wait for `poll`.
+        assert_eq!(poll(&mut r.hub), vec![GamepadEvent::ButtonDown(0)]);
+        // Idempotent: nothing pending → nothing forwarded.
+        r.hub.service();
+        poll(&mut r.hub);
+        assert_eq!(r.a_dc.try_iter().count(), 0);
+    }
+
+    #[test]
     fn no_owner_disconnect_dropped() {
         let (a, a_rx) = unbounded();
         let (b, b_rx) = unbounded();
@@ -514,6 +563,10 @@ mod tests {
         assert!(!r.b_suspend.load(Ordering::SeqCst));
     }
 
+    /// One deliberate difference from the bare `HidSource`: a
+    /// `Disconnected` with no prior `Connected` is dropped (see
+    /// `no_owner_disconnect_dropped`), so tests of the engine's disconnect
+    /// handling send `Connected` first.
     #[test]
     fn dualsense_only_unchanged() {
         let (tx, rx) = unbounded();

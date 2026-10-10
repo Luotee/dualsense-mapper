@@ -98,6 +98,10 @@ struct HandleInner {
     /// Test-only: sender for the fake gamepad source. `None` in production.
     #[doc(hidden)]
     fake_tx: Mutex<Option<crossbeam_channel::Sender<crate::gamepad::GamepadEvent>>>,
+    /// Test-only: manual disconnects the fake source received (routed by
+    /// the hub to it as owner). `None` in production.
+    #[doc(hidden)]
+    fake_disconnect_rx: Mutex<Option<Receiver<()>>>,
     /// Live touchpad cursor parameters, shared with the HID worker.
     /// `set_settings` mutates these through the handle so changes take
     /// effect on the next decoded frame without rebuilding the engine.
@@ -200,6 +204,17 @@ impl Handle {
         }
     }
 
+    /// How many manual disconnects reached the fake source since the last
+    /// call. Works only when spawned via `Engine::spawn_with_fake_gamepad`;
+    /// 0 otherwise.
+    #[doc(hidden)]
+    pub fn fake_disconnects_received(&self) -> usize {
+        match self.inner.fake_disconnect_rx.lock() {
+            Ok(guard) => guard.as_ref().map_or(0, |rx| rx.try_iter().count()),
+            Err(_) => 0,
+        }
+    }
+
     /// Inject a fake ButtonUp event. Works only when spawned via
     /// `Engine::spawn_with_fake_gamepad`; no-op otherwise.
     #[doc(hidden)]
@@ -256,14 +271,16 @@ impl Engine {
             cfg.touchpad_midpoint_y,
         );
         let (fake_tx, fake_rx) = unbounded::<crate::gamepad::GamepadEvent>();
-        let src = GamepadSource::fake(fake_rx);
-        let (disconnect_tx, _disconnect_rx) = crossbeam_channel::bounded::<()>(4);
+        let (disconnect_tx, disconnect_rx) = crossbeam_channel::bounded::<()>(4);
+        let (source_dc_tx, source_dc_rx) = unbounded::<()>();
+        let src = GamepadSource::fake_with_disconnect(fake_rx, disconnect_rx, source_dc_tx);
         let (_warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
         let engine = Self::spawn_inner(
             cfg, /*dry_run=*/true, src, cursor_params, disconnect_tx, warn_rx,
         )?;
         // Install the sender into HandleInner.
         *engine.handle.inner.fake_tx.lock().unwrap() = Some(fake_tx);
+        *engine.handle.inner.fake_disconnect_rx.lock().unwrap() = Some(source_dc_rx);
         Ok(engine)
     }
 
@@ -288,6 +305,7 @@ impl Engine {
             event_rx,
             key_state: key_state.clone(),
             fake_tx: Mutex::new(None),
+            fake_disconnect_rx: Mutex::new(None),
             current_status: RwLock::new(None),
             cursor_params,
             disconnect_signal: disconnect_tx,
@@ -347,6 +365,11 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
     let mut mapping_on = true;
 
     while !h.shutdown.load(Ordering::SeqCst) {
+        // ── Source control, paused or not ────────────────────────────────────
+        // Turn Off stays clickable while paused; its request must reach the
+        // owning worker now, not queue until unpause (`poll` is skipped then).
+        source.service();
+
         // ── Pause / unpause edge ─────────────────────────────────────────────
         let paused = h.paused.load(Ordering::SeqCst);
         if paused && !last_paused {

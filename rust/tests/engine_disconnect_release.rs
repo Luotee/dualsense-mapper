@@ -188,3 +188,26 @@ fn reconnect_with_stick_still_held_presses_again() {
 
     engine.shutdown();
 }
+
+/// The tray "pause" leaves Turn Off clickable: the request must reach the
+/// owning source while the engine is paused (it skips `poll` then), not
+/// queue until unpause.
+#[test]
+fn disconnect_while_paused_reaches_source() {
+    let engine = Engine::spawn_with_fake_gamepad(dualsense_cfg()).expect("spawn");
+    let h = engine.handle();
+    connect(&h, ControllerKind::DualSense);
+    h.set_paused(true);
+    std::thread::sleep(STEP);
+
+    h.disconnect_current_device();
+    let deadline = std::time::Instant::now() + STEP;
+    let mut got = 0;
+    while got == 0 && std::time::Instant::now() < deadline {
+        got += h.fake_disconnects_received();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(got, 1, "manual disconnect must reach the source while paused");
+
+    engine.shutdown();
+}
