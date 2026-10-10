@@ -34,6 +34,8 @@ const ATTEMPTS: usize = 3;
 const SUBCMD_SPI_READ: u8 = 0x10;
 const SUBCMD_INPUT_MODE: u8 = 0x03;
 const SUBCMD_PLAYER_LED: u8 = 0x30;
+const SUBCMD_TURN_OFF: u8 = 0x06;
+const TURN_OFF_ARG: u8 = 0x00;
 const INPUT_MODE_FULL: u8 = 0x30;
 const PLAYER_LED_1: u8 = 0x01;
 const USER_CAL: (u32, u8) = (0x8010, 0x16);
@@ -81,6 +83,12 @@ pub(crate) fn ns_handshake_counted(
 /// the pad falls back to 0x3F while streaming. The reply is not awaited.
 pub(crate) fn send_input_mode_full(io: &dyn HidIo, counter: &mut u8) {
     write_subcmd(io, counter, SUBCMD_INPUT_MODE, &[INPUT_MODE_FULL]);
+}
+
+/// Fire-and-forget `0x06 0x00` (HCI "sleep" / Turn Off), sent before the
+/// handle is dropped. The ACK is not awaited: the pad is about to go away.
+pub(crate) fn send_turn_off(io: &dyn HidIo, counter: &mut u8) {
+    write_subcmd(io, counter, SUBCMD_TURN_OFF, &[TURN_OFF_ARG]);
 }
 
 /// Write one subcommand and advance the counter (mod 16). Logs failures.
@@ -380,6 +388,20 @@ mod tests {
         let ids: Vec<u8> = io.writes().iter().map(|w| w[10]).collect();
         assert_eq!(ids, vec![0x10, 0x03, 0x30], "no factory read when user cal is valid");
         assert_eq!(cal, parse_user_cal(&user).unwrap());
+    }
+
+    #[test]
+    fn ns_turn_off_sends_0x06_before_drop() {
+        let io = FakeNs::new(false);
+        let mut counter = 5u8;
+        send_turn_off(&io, &mut counter);
+        let writes = io.writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][0], 0x01, "rumble+subcmd output report");
+        assert_eq!(writes[0][1], 5, "session counter");
+        assert_eq!(writes[0][10], 0x06, "subcmd id");
+        assert_eq!(writes[0][11], 0x00, "arg");
+        assert_eq!(counter, 6);
     }
 
     #[test]

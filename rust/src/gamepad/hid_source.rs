@@ -14,7 +14,7 @@
 
 use super::cursor_params::CursorParams;
 use super::ds_protocol::{build_handshake_buffer, decode_31, REPORT_LEN_BT};
-use super::ns_handshake::{ns_handshake_counted, send_input_mode_full};
+use super::ns_handshake::{ns_handshake_counted, send_input_mode_full, send_turn_off};
 use super::ns_protocol::{decode_30, StickCal};
 use super::pad::{PadState, BUTTON_SLOTS};
 use super::controller::ControllerKind;
@@ -609,14 +609,20 @@ fn worker_real(
                     &d, &mut session, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
                     &params, &stop, &disconnect_rx,
                 );
+                // Switch Pro: ask the pad to sleep while the handle is still
+                // open, then drop it below.
+                if outcome == "manual-disconnect" && kind == ControllerKind::NsPro {
+                    send_turn_off(&d, &mut session.ns_counter);
+                }
                 // Drop the HID handle so Windows can cleanly drop the
                 // Bluetooth bond.
                 drop(d);
-                // A user-requested disconnect means "turn the pad off": the
-                // DualSense HID protocol has no power-off command, so power
-                // it off at the Bluetooth-link layer (see `crate::platform`).
-                if outcome == "manual-disconnect" && kind == ControllerKind::DualSense {
-                    match crate::platform::power_off_connected_dualsense() {
+                // A user-requested disconnect means "turn the pad off": drop
+                // the Bluetooth link (see `crate::platform`). The DualSense
+                // has no HID power-off command; the Switch Pro got its
+                // subcmd 0x06 above and the link drop makes it certain.
+                if outcome == "manual-disconnect" {
+                    match crate::platform::power_off_connected(kind) {
                         Ok(n) => tracing::info!(removed = n, "controller power-off requested"),
                         Err(e) => tracing::warn!(error = %e, "controller power-off failed"),
                     }
