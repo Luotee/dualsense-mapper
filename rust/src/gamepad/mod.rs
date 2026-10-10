@@ -10,8 +10,10 @@ pub mod cursor_params;
 pub mod events;
 pub mod ds_protocol;
 pub mod hid_source;
+pub mod pad;
 
 pub use controller::ControllerKind;
 pub use cursor_params::CursorParams;
 pub use events::GamepadEvent;
 pub use hid_source::HidSource as GamepadSource;
+pub use pad::{PadState, BUTTON_SLOTS};

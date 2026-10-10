@@ -4,6 +4,8 @@
 //! main difference between v1.x (gilrs) and v2.x (raw HID) — every
 //! decoded byte is observable and testable from synthesised buffers.
 
+use super::pad::PadState;
+
 /// Length of the BT 0x31 input report.
 pub const REPORT_LEN_BT: usize = 78;
 
@@ -20,36 +22,13 @@ pub fn build_handshake_buffer() -> [u8; HANDSHAKE_FEATURE_LEN] {
     buf
 }
 
-/// Decoded snapshot of a single 0x31 frame. Diffing two of these
-/// against each other yields the GamepadEvent stream.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct DsState {
-    pub stick_lx: f32,
-    pub stick_ly: f32,
-    pub stick_rx: f32,
-    pub stick_ry: f32,
-    pub trigger_l2: f32,
-    pub trigger_r2: f32,
-    /// Bit-vector of buttons indexed 0..=24. Same ids as v1.x
-    /// `gamepad::button_index`, so existing config files migrate as-is.
-    pub buttons: [bool; 25],
-    /// Touchpad finger 0: true when a finger is currently in contact.
-    pub finger0_active: bool,
-    /// Touchpad x in 0..=1919.
-    pub finger0_x: u16,
-    /// Touchpad y in 0..=1079.
-    pub finger0_y: u16,
-    /// Whole-touchpad physical click switch.
-    pub touchpad_btn: bool,
-}
-
 /// Decode a 78-byte BT 0x31 report. Returns None on short buffer or
 /// wrong report id.
-pub fn decode_31(buf: &[u8]) -> Option<DsState> {
+pub fn decode_31(buf: &[u8]) -> Option<PadState> {
     if buf.len() < REPORT_LEN_BT || buf[0] != 0x31 {
         return None;
     }
-    let mut s = DsState::default();
+    let mut s = PadState::default();
     s.stick_lx = stick_axis(buf[2]);
     s.stick_ly = -stick_axis(buf[3]);
     s.stick_rx = stick_axis(buf[4]);
@@ -132,6 +111,7 @@ fn decode_hat(hat: u8) -> (bool, bool, bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gamepad::pad::BUTTON_SLOTS;
 
     fn neutral_report() -> [u8; REPORT_LEN_BT] {
         let mut buf = [0u8; REPORT_LEN_BT];
@@ -144,6 +124,17 @@ mod tests {
         buf[34] = 0x80; // touchpad finger 0 inactive (high bit = "no contact")
         buf[38] = 0x80; // touchpad finger 1 inactive (decoded but ignored in v2.1)
         buf
+    }
+
+    #[test]
+    fn decode_31_never_sets_slots_beyond_28() {
+        let mut buf = neutral_report();
+        buf[9] = 0xFF;
+        buf[10] = 0xFF;
+        buf[11] = 0xFF;
+        let s = decode_31(&buf).unwrap();
+        assert_eq!(s.buttons.len(), BUTTON_SLOTS);
+        assert!(!s.buttons[29]);
     }
 
     #[test]

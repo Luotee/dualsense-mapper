@@ -11,7 +11,8 @@
 //! - `new_from_byte_stream(rx)` — raw 78-byte injection (state-machine tests)
 
 use super::cursor_params::CursorParams;
-use super::ds_protocol::{build_handshake_buffer, decode_31, DsState, REPORT_LEN_BT};
+use super::ds_protocol::{build_handshake_buffer, decode_31, REPORT_LEN_BT};
+use super::pad::{PadState, BUTTON_SLOTS};
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
 use anyhow::{anyhow, Context, Result};
@@ -245,10 +246,10 @@ fn stable_pos_for_click(
 }
 
 /// Cursor delta + touchpad click → 4-quadrant button events. Mutates
-/// `state` across frames. Called per decoded `DsState`.
+/// `state` across frames. Called per decoded `PadState`.
 fn process_touchpad(
     state: &mut TouchpadState,
-    cur: &DsState,
+    cur: &PadState,
     params: &CursorParams,
     tx: &Sender<GamepadEvent>,
 ) {
@@ -493,8 +494,8 @@ fn worker_real(
             Some((d, kind)) => {
                 tracing::info!("DualSense opened, attempting 0x31 handshake");
                 let _ = try_handshake(&d);
-                let mut prev_buttons = [false; 25];
-                let mut last_state: Option<DsState> = None;
+                let mut prev_buttons = [false; BUTTON_SLOTS];
+                let mut last_state: Option<PadState> = None;
                 let mut touchpad = TouchpadState::default();
                 let outcome = read_loop(
                     d, kind, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
@@ -536,8 +537,8 @@ fn read_loop(
     d: hidapi::HidDevice,
     kind: ControllerKind,
     tx: &Sender<GamepadEvent>,
-    last_state: &mut Option<DsState>,
-    prev_buttons: &mut [bool; 25],
+    last_state: &mut Option<PadState>,
+    prev_buttons: &mut [bool; BUTTON_SLOTS],
     touchpad: &mut TouchpadState,
     params: &CursorParams,
     stop: &Arc<AtomicBool>,
@@ -587,8 +588,8 @@ fn worker_byte_stream(
     disconnect_rx: crossbeam_channel::Receiver<()>,
 ) {
     use crossbeam_channel::select;
-    let mut last_state: Option<DsState> = None;
-    let mut prev_buttons = [false; 25];
+    let mut last_state: Option<PadState> = None;
+    let mut prev_buttons = [false; BUTTON_SLOTS];
     let mut touchpad = TouchpadState::default();
     let mut emitted_connected = false;
     let mut disconnect_alive = true;
@@ -650,9 +651,9 @@ fn worker_byte_stream(
 }
 
 fn diff_emit(
-    prev: Option<&DsState>,
-    cur: &DsState,
-    prev_buttons: &mut [bool; 25],
+    prev: Option<&PadState>,
+    cur: &PadState,
+    prev_buttons: &mut [bool; BUTTON_SLOTS],
     tx: &Sender<GamepadEvent>,
 ) {
     if prev.map_or(true, |p| p.stick_lx != cur.stick_lx) {
