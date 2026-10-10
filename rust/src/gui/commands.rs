@@ -396,6 +396,46 @@ pub fn reset_settings_impl(
     set_settings_impl(engine, config_path, Settings::defaults())
 }
 
+// ─── set_mapping_enabled ──────────────────────────────────────────────────────
+
+/// Tauri command: turn mapping ON/OFF for one controller kind (persisted).
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn set_mapping_enabled(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    kind: String,
+    enabled: bool,
+) -> Result<(), String> {
+    set_mapping_enabled_impl(&*engine, &config_path, &kind, enabled)
+        .map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Pure implementation of `set_mapping_enabled` callable without `tauri::State`.
+///
+/// Unknown `kind` slugs are rejected before touching disk.
+pub fn set_mapping_enabled_impl(
+    engine: &Handle,
+    config_path: &Path,
+    kind: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let k = crate::gamepad::ControllerKind::from_slug(kind)
+        .ok_or_else(|| anyhow::anyhow!("unknown controller kind '{kind}'"))?;
+    let mut doc = ConfigDoc::load(config_path)?;
+    doc.set_mapping_enabled(k, enabled);
+    doc.validate()?;
+    write_atomic(config_path, &doc)?;
+    engine
+        .config_write()
+        .mapping_enabled
+        .insert(k.slug().to_string(), enabled);
+    Ok(())
+}
+
 // ─── pause_mapper ─────────────────────────────────────────────────────────────
 
 /// Tauri command: pause or unpause the mapper engine.
@@ -505,6 +545,9 @@ pub fn disconnect_gamepad(
 }
 
 /// Tauri command: return the current controller connection state.
+///
+/// The returned `ControllerStatus` carries the controller `kind` and any
+/// `warnings` alongside the connected flag.
 ///
 /// The engine emits `controller-status` events on connect/disconnect, but
 /// Tauri events don't replay missed emissions — a pad already paired before
