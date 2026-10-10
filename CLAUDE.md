@@ -171,6 +171,32 @@ The window is a fixed `100vh` shell (`.app { overflow: hidden }`) and
 `html, body { overscroll-behavior: none }` — nothing may rubber-band
 or scroll the window itself.
 
+## Self-verification (agent runs this before every release PR)
+
+`scripts/verify.sh` is the one command that verifies a release. Run it
+from the repo root; it prints a PASS / FAIL / SKIP table and exits
+non-zero on any FAIL. Logs: `rust/target/verify/<layer>.log`.
+
+| Layer | Covers |
+|---|---|
+| `linux` | `cargo test`, all suites, on the Linux dev host |
+| `windows-tests` | `cargo xwin test --no-run` (MSVC target); every test exe runs natively on Windows via WSL interop |
+| `gui-smoke` | GUI exe build; launched alone (`--dry-run`) from a fresh `%LOCALAPPDATA%\Temp` dir: titled window up, first-run `dualsense-mapper.json` written, survives a valid and an invalid config hot-edit; killed by PID, temp dir removed. SKIPs if the user's copy is running |
+| `web` | the click-through recipe above, automated: `scripts/verify/web-smoke.mjs` (Playwright + cached Chromium, mocked `__TAURI__`); screenshots in `rust/target/verify/` |
+
+Flags: `--quick` (linux + windows-tests), `--skip-gui`, `--skip-web`,
+`--only <layer>`. Toolchain paths come from the untracked
+`~/.config/dualsense-mapper/verify-env.sh`; a missing tool turns its
+layer into SKIP with a hint (missing cargo FAILs `linux`).
+
+- The agent runs `scripts/verify.sh` (all layers) before every release
+  PR and pastes its summary table into the PR body's **Test plan**. A
+  SKIP needs a one-line reason there.
+- Do not hand the maintainer a manual checklist for anything the script
+  covers. Only what needs a physical controller (radio link, pairing,
+  real button presses / macros on hardware) goes to the human, batched
+  into one guided run, not drip-fed.
+
 ## Iron rules for the Rust source
 
 These are project-specific invariants. Breaking any of them silently
