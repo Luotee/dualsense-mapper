@@ -14,6 +14,15 @@ fn shipped_example_config_validates() {
 }
 
 #[test]
+fn shipped_example_config_has_rumble_on_connect() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
+    let text = std::fs::read_to_string(&path).expect("read example config");
+    let cfg = Config::load_from_path(&path).expect("load+validate");
+    assert!(cfg.rumble_on_connect);
+    assert!(text.contains("\"rumble_on_connect\""), "example config must carry the key");
+}
+
+#[test]
 fn shipped_maple_profile_validates() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/maple_artale.json");
     Config::load_from_path(&path).expect("maple profile load+validate");

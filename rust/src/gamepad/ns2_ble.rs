@@ -28,11 +28,18 @@ use crossbeam_channel::{Receiver, Sender};
 
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
+use super::SourceCmd;
 use super::ns2_protocol::{classify_advert, decode_05, parse_advert, AdvertMatch, Ns2StickCal, NS2_COMPANY_ID};
 use super::pad::{emit_pad_diff, PadState, BUTTON_SLOTS};
 
 /// No decoded report for this long → the link is considered lost.
 pub(crate) const WATCHDOG_LIMIT: Duration = Duration::from_millis(1000);
+
+/// Bound on one vibration frame write. The spike measured ~12 ms per frame;
+/// 100 ms is about 6 connection intervals. A write stalled on a dying link
+/// blocks the stream loop, so this must stay well inside `WATCHDOG_LIMIT`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const VIB_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Status warning for Windows builds older than 22000 (Windows 10), whose
 /// BLE stack cannot reach the 15 ms connection interval.
@@ -269,6 +276,19 @@ impl InputStream {
     }
 }
 
+/// How long the streaming select may sleep: until the watchdog fires, the
+/// next rumble step is due (zero if overdue), or `tick`, whichever is first.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn next_wait(
+    now: Instant,
+    watchdog_left: Option<Duration>,
+    rumble_due: Option<Instant>,
+    tick: Duration,
+) -> Duration {
+    let rumble_left = rumble_due.map(|t| t.saturating_duration_since(now));
+    [watchdog_left, rumble_left].into_iter().flatten().fold(tick, Duration::min)
+}
+
 // ─── Windows: btleplug worker ──────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -281,11 +301,11 @@ pub struct Ns2BleSource {
 #[cfg(windows)]
 impl Ns2BleSource {
     /// Spawn the BLE worker thread. It emits nothing until a pad's first
-    /// decoded report. `disconnect_rx` carries manual disconnect requests
-    /// (ignored while no pad is connected); `warn_tx` receives status
+    /// decoded report. `cmd_rx` carries the hub's commands: manual disconnect
+    /// requests (ignored while no pad is connected) and rumble requests; `warn_tx` receives status
     /// warnings (`WARN_BLE_RATE_LIMITED_WIN10`, at most once per process,
     /// when an NS2 Pro first connects on Windows 10).
-    pub fn new(disconnect_rx: Receiver<()>, warn_tx: Sender<String>) -> anyhow::Result<Self> {
+    pub fn new(cmd_rx: Receiver<SourceCmd>, warn_tx: Sender<String>) -> anyhow::Result<Self> {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -295,7 +315,7 @@ impl Ns2BleSource {
             tx,
             stop: stop.clone(),
             suspend: suspend.clone(),
-            disconnect_rx,
+            cmd_rx,
             warn_tx,
             build: None,
         };
@@ -335,6 +355,7 @@ mod imp {
         CMD_PAIR, CMD_POWER, SPI_CAL_LEN, SPI_LEFT_STICK_CAL, SPI_RIGHT_STICK_CAL, SUB_LED_SET,
         SUB_PAIR_A1, SUB_PAIR_A2, SUB_PAIR_ADDR, SUB_PAIR_COMMIT, SUB_POWER_OFF,
     };
+    use crate::gamepad::rumble::{ns2_vibration_frame, RumblePlan, Step, NS2_BUZZ_OP, NS2_STOP_OP};
     use anyhow::{anyhow, bail, Context, Result};
     use btleplug::api::{
         Central, CentralEvent, Characteristic, ConnectionParameterPreset, Manager as _,
@@ -353,6 +374,8 @@ mod imp {
     const UUID_CMD: u128 = 0x649d4ac9_8eb7_4e6c_af44_1ea54fe5f005;
     /// Command response notify.
     const UUID_RESP: u128 = 0xc765a961_d9d8_4d36_a20a_5315b111836a;
+    /// Vibration write-without-response (rumble frames).
+    const UUID_VIB: u128 = 0xcc483f51_9258_427d_a939_630c31f72b05;
 
     /// Upper bound on any wait before the stop flag is re-checked.
     const TICK: Duration = Duration::from_millis(100);
@@ -373,7 +396,7 @@ mod imp {
         pub(super) tx: Sender<GamepadEvent>,
         pub(super) stop: Arc<AtomicBool>,
         pub(super) suspend: Arc<AtomicBool>,
-        pub(super) disconnect_rx: Receiver<()>,
+        pub(super) cmd_rx: Receiver<SourceCmd>,
         pub(super) warn_tx: Sender<String>,
         /// Windows build, read once at thread start.
         pub(super) build: Option<u32>,
@@ -404,9 +427,10 @@ mod imp {
             }
         }
 
-        /// A manual disconnect while no pad is connected is a no-op.
-        fn drain_disconnects(&self) {
-            while self.disconnect_rx.try_recv().is_ok() {}
+        /// A command (manual disconnect or rumble) while no pad is
+        /// connected is a no-op.
+        fn drain_commands(&self) {
+            while self.cmd_rx.try_recv().is_ok() {}
         }
     }
 
@@ -529,7 +553,7 @@ mod imp {
     async fn pause(ctx: &Ctx, d: Duration) {
         let end = Instant::now() + d;
         while !ctx.stopped() {
-            ctx.drain_disconnects();
+            ctx.drain_commands();
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -637,7 +661,7 @@ mod imp {
                 ScanStep::Restart => return Ok(Scan::Restart),
                 ScanStep::Suspend => return Ok(Scan::Suspended),
             }
-            ctx.drain_disconnects();
+            ctx.drain_commands();
             let ev = match tokio::time::timeout(TICK, ble.events.next()).await {
                 Err(_) => continue,
                 Ok(None) => bail!("adapter event stream closed"),
@@ -659,6 +683,8 @@ mod imp {
         p: &'a Peripheral,
         cmd: Characteristic,
         input: Characteristic,
+        /// Vibration characteristic; `None` → no rumble this session.
+        vib: Option<Characteristic>,
         notes: Notes,
     }
 
@@ -706,6 +732,30 @@ mod imp {
             let write = self.p.write(&self.cmd, pkt, WriteType::WithoutResponse);
             bounded(ctx, GATT_OP_TIMEOUT, "command write", write).await?.context("command write")
         }
+
+        /// Write one vibration frame (without response). Never a request:
+        /// no response is expected and input must keep flowing.
+        async fn vibrate(&self, ctx: &Ctx, frame: &[u8]) -> Result<()> {
+            let Some(vib) = &self.vib else { bail!("no vibration characteristic") };
+            let write = self.p.write(vib, frame, WriteType::WithoutResponse);
+            bounded(ctx, VIB_WRITE_TIMEOUT, "vibration write", write).await?.context("vibration write")
+        }
+
+        /// The session is ending on purpose (manual disconnect, app stop):
+        /// a pad mid-buzz gets one stop frame, best effort. Not cut short
+        /// by the stop flag (unlike `vibrate`), or an app stop could never
+        /// send it; bounded by `VIB_WRITE_TIMEOUT` like every frame.
+        async fn stop_rumble(&self, plan: &mut Option<RumblePlan>, seq: &mut u8) {
+            let (Some(Step::Stop), Some(vib)) = (plan.take().and_then(|mut p| p.abort()), &self.vib)
+            else {
+                return;
+            };
+            let frame = ns2_vibration_frame(*seq, NS2_STOP_OP);
+            *seq = seq.wrapping_add(1);
+            let write = self.p.write(vib, &frame, WriteType::WithoutResponse);
+            let sent = matches!(tokio::time::timeout(VIB_WRITE_TIMEOUT, write).await, Ok(Ok(())));
+            tracing::info!(kind = ?ControllerKind::Ns2Pro, sent, "rumble: stopped early");
+        }
     }
 
     /// Connect, initialize, stream. Returns how the session ended.
@@ -735,10 +785,14 @@ mod imp {
                 .ok_or_else(|| anyhow!("characteristic {u:032x} missing"))
         };
         let (cmd, input_char, resp) = (find(UUID_CMD)?, find(UUID_INPUT)?, find(UUID_RESP)?);
+        let vib = chars.iter().find(|c| c.uuid.as_u128() == UUID_VIB).cloned();
+        if vib.is_none() {
+            tracing::info!("NS2 BLE: vibration characteristic not found; rumble off");
+        }
         // Take the notification stream before enabling notify so no
         // response is missed.
         let notes = p.notifications().await.context("notification stream")?;
-        let mut link = Link { p, cmd, input: input_char, notes };
+        let mut link = Link { p, cmd, input: input_char, vib, notes };
         bounded(ctx, GATT_OP_TIMEOUT, "subscribe response", p.subscribe(&resp))
             .await?
             .context("subscribe response")?;
@@ -761,7 +815,7 @@ mod imp {
 
         // ── Streaming ──
         // A request made before this pad was announced is not for it.
-        ctx.drain_disconnects();
+        ctx.drain_commands();
         input.arm(Instant::now());
         stream(ctx, ble, &mut link, input).await
     }
@@ -773,23 +827,50 @@ mod imp {
         input: &mut InputStream,
     ) -> Result<SessionEnd> {
         let id = link.p.id();
+        let mut plan: Option<RumblePlan> = None;
+        // Vibration frame sequence; wraps (only the low nibble is sent).
+        let mut seq: u8 = 0;
         loop {
             // Checked every iteration: reports arrive every ~15 ms.
             if ctx.stopped() {
+                link.stop_rumble(&mut plan, &mut seq).await;
                 return Ok(SessionEnd::Stopped);
             }
-            if ctx.disconnect_rx.try_recv().is_ok() && input.announced() {
-                // Release held keys now, not after the ~2.5 s turn-off.
-                input.finish(&ctx.tx);
-                turn_off(ctx, link).await;
-                return Ok(SessionEnd::TurnedOff);
+            // One command per iteration. A `Rumble` (re)starts the buzz and
+            // never ends the session; a `Disconnect` before the pad
+            // announced is dropped.
+            match ctx.cmd_rx.try_recv() {
+                Ok(SourceCmd::Disconnect) if input.announced() => {
+                    // Release held keys now, before the stop frame and the
+                    // ~2.5 s turn-off.
+                    input.finish(&ctx.tx);
+                    link.stop_rumble(&mut plan, &mut seq).await;
+                    turn_off(ctx, link).await;
+                    return Ok(SessionEnd::TurnedOff);
+                }
+                Ok(SourceCmd::Rumble) if link.vib.is_some() => {
+                    let now = Instant::now();
+                    plan = Some(match plan.take() {
+                        Some(old) => old.restarted(now),
+                        None => RumblePlan::new(ControllerKind::Ns2Pro, now),
+                    });
+                    tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: start");
+                }
+                Ok(_) | Err(_) => {}
             }
             let now = Instant::now();
             if input.expired(now) {
                 tracing::info!("NS2 Pro: no report for {WATCHDOG_LIMIT:?}");
                 return Ok(SessionEnd::LinkLost);
             }
-            let wait = input.remaining(now).unwrap_or(TICK).min(TICK);
+            // One frame per iteration, so notifications are drained between
+            // frames even when writes are slow (an overdue step makes the
+            // wait zero).
+            play_rumble(ctx, link, &mut plan, &mut seq).await;
+            // Wake for the next rumble step too, never later than the watchdog.
+            let now = Instant::now();
+            let rumble_due = plan.as_ref().and_then(RumblePlan::next_due);
+            let wait = next_wait(now, input.remaining(now), rumble_due, TICK);
             tokio::select! {
                 n = link.notes.next() => match n {
                     Some(n) if n.uuid.as_u128() == UUID_INPUT => {
@@ -810,6 +891,29 @@ mod imp {
                 },
                 _ = tokio::time::sleep(wait) => {}
             }
+        }
+    }
+
+    /// Write at most one due rumble step. A write error skips the rest of
+    /// the buzz; the stops are still tried. While the app is stopping the
+    /// plan is kept as is, so the stop check can still send its stop frame.
+    async fn play_rumble(ctx: &Ctx, link: &Link<'_>, plan: &mut Option<RumblePlan>, seq: &mut u8) {
+        let Some(p) = plan.as_mut() else { return };
+        if let Some(step) = p.take_due(Instant::now()) {
+            let op = if step == Step::Buzz { NS2_BUZZ_OP } else { NS2_STOP_OP };
+            let frame = ns2_vibration_frame(*seq, op);
+            *seq = seq.wrapping_add(1);
+            if let Err(e) = link.vibrate(ctx, &frame).await {
+                p.on_write_failed();
+                if ctx.stopped() {
+                    return;
+                }
+                tracing::warn!(error = %format!("{e:#}"), ?step, "rumble write failed; dropping it");
+            }
+        }
+        if p.finished() {
+            tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: done");
+            *plan = None;
         }
     }
 
@@ -884,22 +988,22 @@ mod imp {
 
 // ─── Other platforms: stub ─────────────────────────────────────────────────
 
-/// Non-Windows stand-in: never connects, never warns. Manual disconnect
-/// signals are drained so they do not pile up.
+/// Non-Windows stand-in: never connects, never warns. Commands (manual
+/// disconnect, rumble) are drained so they do not pile up.
 #[cfg(not(windows))]
 pub struct Ns2BleSource {
-    disconnect_rx: Receiver<()>,
+    cmd_rx: Receiver<SourceCmd>,
     suspend: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(not(windows))]
 impl Ns2BleSource {
-    pub fn new(disconnect_rx: Receiver<()>, _warn_tx: Sender<String>) -> anyhow::Result<Self> {
-        Ok(Self { disconnect_rx, suspend: Default::default() })
+    pub fn new(cmd_rx: Receiver<SourceCmd>, _warn_tx: Sender<String>) -> anyhow::Result<Self> {
+        Ok(Self { cmd_rx, suspend: Default::default() })
     }
 
     pub fn poll(&mut self, _out: &mut Vec<GamepadEvent>) {
-        while self.disconnect_rx.try_recv().is_ok() {}
+        while self.cmd_rx.try_recv().is_ok() {}
     }
 
     /// Stored only; the stub never scans.
@@ -978,6 +1082,27 @@ mod tests {
         w.feed(t0 + Duration::from_millis(900));
         assert!(!w.expired(t0 + Duration::from_millis(1800)));
         assert!(w.expired(t0 + Duration::from_millis(1900)));
+    }
+
+    #[test]
+    fn vibration_write_bound_stays_well_inside_the_watchdog() {
+        // A stalled frame write blocks the stream loop; it must never
+        // stretch past the 1000 ms liveness bound (iron rule 11).
+        assert_eq!(VIB_WRITE_TIMEOUT, Duration::from_millis(100));
+        assert!(VIB_WRITE_TIMEOUT * 5 < WATCHDOG_LIMIT);
+    }
+
+    #[test]
+    fn next_wait_takes_the_earliest_deadline() {
+        let now = Instant::now();
+        let tick = Duration::from_millis(100);
+        assert_eq!(next_wait(now, None, None, tick), tick);
+        assert_eq!(next_wait(now, Some(Duration::from_millis(40)), None, tick), Duration::from_millis(40));
+        assert_eq!(
+            next_wait(now, Some(Duration::from_millis(40)), Some(now + Duration::from_millis(12)), tick),
+            Duration::from_millis(12)
+        );
+        assert_eq!(next_wait(now + Duration::from_millis(5), None, Some(now), tick), Duration::ZERO); // overdue
     }
 
     #[test]
@@ -1106,10 +1231,11 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn stub_never_connects() {
-        let (dtx, drx) = unbounded::<()>();
+        let (dtx, drx) = unbounded::<SourceCmd>();
         let (wtx, wrx) = unbounded::<String>();
         let mut src = Ns2BleSource::new(drx, wtx).unwrap();
-        let _ = dtx.send(());
+        let _ = dtx.send(SourceCmd::Disconnect);
+        let _ = dtx.send(SourceCmd::Rumble);
         let mut out = Vec::new();
         for _ in 0..5 {
             src.poll(&mut out);
@@ -1117,13 +1243,13 @@ mod tests {
         }
         assert!(out.is_empty(), "stub emitted {out:?}");
         assert!(wrx.try_recv().is_err(), "stub sends no warnings");
-        assert!(dtx.is_empty(), "stub drains manual disconnect signals");
+        assert!(dtx.is_empty(), "stub drains commands");
     }
 
     #[test]
     #[cfg(not(windows))]
     fn stub_suspend_flag_is_shared() {
-        let (_dtx, drx) = unbounded::<()>();
+        let (_dtx, drx) = unbounded::<SourceCmd>();
         let (wtx, _wrx) = unbounded::<String>();
         let src = Ns2BleSource::new(drx, wtx).unwrap();
         let flag = src.suspend_flag();

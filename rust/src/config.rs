@@ -35,8 +35,12 @@ pub struct Config {
     /// Missing key → `ControllerKind::default_mapping_enabled()`.
     #[serde(default)]
     pub mapping_enabled: BTreeMap<String, bool>,
+    /// Buzz the controller once when it becomes the active one.
+    #[serde(default = "default_rumble_on_connect")]
+    pub rumble_on_connect: bool,
 }
 
+fn default_rumble_on_connect() -> bool { true }
 fn default_touchpad_cursor_enabled() -> bool { true }
 fn default_touchpad_cursor_sensitivity() -> f32 { 1.5 }
 fn default_touchpad_midpoint_x() -> u16 { 960 }
@@ -545,7 +549,24 @@ mod tests {
             touchpad_deadzone_radius: 2,
             touchpad_click_freeze_enabled: true,
             mapping_enabled: Default::default(),
+            rumble_on_connect: true,
         }
+    }
+
+    #[test]
+    fn rumble_on_connect_defaults_to_true_when_missing() {
+        let mut v = serde_json::to_value(sample_full_config()).unwrap();
+        v.as_object_mut().unwrap().remove("rumble_on_connect");
+        let c: Config = serde_json::from_value(v).unwrap();
+        assert!(c.rumble_on_connect);
+    }
+
+    #[test]
+    fn rumble_on_connect_false_parses() {
+        let mut v = serde_json::to_value(sample_full_config()).unwrap();
+        v.as_object_mut().unwrap().insert("rumble_on_connect".into(), serde_json::Value::Bool(false));
+        let c: Config = serde_json::from_value(v).unwrap();
+        assert!(!c.rumble_on_connect);
     }
 
     #[test]
@@ -633,6 +654,7 @@ mod tests {
             touchpad_deadzone_radius: 2,
             touchpad_click_freeze_enabled: true,
             mapping_enabled: Default::default(),
+            rumble_on_connect: true,
         }
     }
 

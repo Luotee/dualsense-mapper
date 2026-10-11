@@ -23,9 +23,10 @@
 //!   want the engine to see.
 //! * With no owner, other events pass through (the engine's fake source in
 //!   tests sends buttons without `Connected`).
-//! * A manual disconnect reaches only the owner's worker; with no owner it
-//!   is dropped. It is routed by `service`, which the engine calls every
-//!   tick even while paused (when it does not `poll`).
+//! * Commands (manual disconnect, rumble) reach only the owner's worker;
+//!   with no owner they are dropped. They are routed by `service`, which
+//!   the engine calls every tick even while paused (when it does not
+//!   `poll`).
 //! * While a source owns the session, a source that can be suspended (the
 //!   BLE worker) is told to stop scanning: a continuous BLE scan shares the
 //!   radio with the DualSense's Bluetooth link, and its finds would be
@@ -41,6 +42,7 @@ use super::controller::ControllerKind;
 use super::cursor_params::CursorParams;
 use super::events::GamepadEvent;
 use super::hid_source::HidSource;
+use super::SourceCmd;
 use super::ns2_ble::Ns2BleSource;
 
 /// A worker the hub drains.
@@ -60,8 +62,9 @@ impl Src {
 
 struct Slot {
     src: Src,
-    /// Manual disconnect for this worker (`None`: the source has none).
-    disconnect_tx: Option<Sender<()>>,
+    /// Commands (manual disconnect, rumble) for this worker (`None`: the
+    /// source takes none).
+    cmd_tx: Option<Sender<SourceCmd>>,
     /// Set while another source owns the session (`None`: not suspendable).
     suspend: Option<Arc<AtomicBool>>,
     /// The kind the source announced while its session is open (sent
@@ -72,8 +75,8 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(src: Src, disconnect_tx: Option<Sender<()>>, suspend: Option<Arc<AtomicBool>>) -> Self {
-        Slot { src, disconnect_tx, suspend, session: None }
+    fn new(src: Src, cmd_tx: Option<Sender<SourceCmd>>, suspend: Option<Arc<AtomicBool>>) -> Self {
+        Slot { src, cmd_tx, suspend, session: None }
     }
 }
 
@@ -81,23 +84,23 @@ pub struct SourceHub {
     /// Polled in order each tick; `[0]` is the HID worker.
     slots: Vec<Slot>,
     owner: Option<usize>,
-    /// Manual disconnect requests from the engine handle.
-    disconnect_rx: Option<Receiver<()>>,
+    /// Commands from the engine handle (manual disconnect, rumble).
+    cmd_rx: Option<Receiver<SourceCmd>>,
     scratch: Vec<GamepadEvent>,
 }
 
 impl SourceHub {
-    /// Spawn the HID worker and the NS2 Pro BLE worker. `disconnect_rx`
-    /// carries manual disconnect requests (routed to the owner);
+    /// Spawn the HID worker and the NS2 Pro BLE worker. `cmd_rx`
+    /// carries the engine's commands (routed to the owner);
     /// `warn_tx` receives status warnings from the BLE worker.
     pub fn new(
         params: CursorParams,
-        disconnect_rx: Receiver<()>,
+        cmd_rx: Receiver<SourceCmd>,
         warn_tx: Sender<String>,
     ) -> Result<Self> {
-        let (hid_tx, hid_rx) = crossbeam_channel::bounded::<()>(4);
+        let (hid_tx, hid_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
         let hid = HidSource::new(params, hid_rx)?;
-        let (ble_tx, ble_rx) = crossbeam_channel::bounded::<()>(4);
+        let (ble_tx, ble_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
         let ble = Ns2BleSource::new(ble_rx, warn_tx)?;
         let suspend = ble.suspend_flag();
         Ok(Self::from_slots(
@@ -105,12 +108,12 @@ impl SourceHub {
                 Slot::new(Src::Hid(hid), Some(hid_tx), None),
                 Slot::new(Src::Ble(ble), Some(ble_tx), Some(suspend)),
             ],
-            Some(disconnect_rx),
+            Some(cmd_rx),
         ))
     }
 
     /// Test-only: a hub over one fake source that drains `GamepadEvent`s
-    /// from `rx`. No manual disconnect routing. The ownership rules still
+    /// from `rx`. No command routing. The ownership rules still
     /// apply: a `Disconnected` with no prior `Connected` is dropped, so a
     /// test that wants the engine's disconnect handling must send
     /// `Connected` first.
@@ -119,18 +122,18 @@ impl SourceHub {
         Self::from_slots(vec![Slot::new(Src::Hid(HidSource::fake(rx)), None, None)], None)
     }
 
-    /// Test-only: `fake` plus manual disconnect routing — requests on
-    /// `disconnect_rx` are forwarded to `source_disconnect_tx` while the
-    /// fake source owns the session.
+    /// Test-only: `fake` plus command routing — commands on `cmd_rx`
+    /// are forwarded to `source_cmd_tx` while the fake source owns the
+    /// session.
     #[doc(hidden)]
     pub fn fake_with_disconnect(
         rx: Receiver<GamepadEvent>,
-        disconnect_rx: Receiver<()>,
-        source_disconnect_tx: Sender<()>,
+        cmd_rx: Receiver<SourceCmd>,
+        source_cmd_tx: Sender<SourceCmd>,
     ) -> Self {
         Self::from_slots(
-            vec![Slot::new(Src::Hid(HidSource::fake(rx)), Some(source_disconnect_tx), None)],
-            Some(disconnect_rx),
+            vec![Slot::new(Src::Hid(HidSource::fake(rx)), Some(source_cmd_tx), None)],
+            Some(cmd_rx),
         )
     }
 
@@ -147,23 +150,23 @@ impl SourceHub {
         )
     }
 
-    fn from_slots(slots: Vec<Slot>, disconnect_rx: Option<Receiver<()>>) -> Self {
-        SourceHub { slots, owner: None, disconnect_rx, scratch: Vec::with_capacity(32) }
+    fn from_slots(slots: Vec<Slot>, cmd_rx: Option<Receiver<SourceCmd>>) -> Self {
+        SourceHub { slots, owner: None, cmd_rx, scratch: Vec::with_capacity(32) }
     }
 
-    /// Control work that must not wait for `poll`: forward pending manual
-    /// disconnects to the owner and re-sync the suspend flags. The engine
+    /// Control work that must not wait for `poll`: forward pending commands
+    /// (manual disconnect, rumble) to the owner and re-sync the suspend flags. The engine
     /// calls it every tick, paused or not (it skips `poll` while paused,
     /// and Turn Off stays clickable then). Idempotent; non-blocking.
     pub fn service(&mut self) {
-        self.route_disconnects();
+        self.route_commands();
         self.sync_suspend();
     }
 
     /// Drain pending events of the owning source (or of any source while
     /// none owns) into `out`. Non-blocking. Also does `service`'s work.
     pub fn poll(&mut self, out: &mut Vec<GamepadEvent>) {
-        self.route_disconnects();
+        self.route_commands();
         let mut scratch = std::mem::take(&mut self.scratch);
         for i in 0..self.slots.len() {
             scratch.clear();
@@ -176,16 +179,16 @@ impl SourceHub {
         self.sync_suspend();
     }
 
-    /// Forward each pending manual disconnect to the owner's worker only.
-    fn route_disconnects(&mut self) {
-        let Some(rx) = &self.disconnect_rx else { return };
-        while rx.try_recv().is_ok() {
-            let tx = self.owner.and_then(|o| self.slots[o].disconnect_tx.as_ref());
+    /// Forward each pending command to the owner's worker only.
+    fn route_commands(&mut self) {
+        let Some(rx) = &self.cmd_rx else { return };
+        while let Ok(cmd) = rx.try_recv() {
+            let tx = self.owner.and_then(|o| self.slots[o].cmd_tx.as_ref());
             match tx {
                 Some(tx) => {
-                    let _ = tx.try_send(());
+                    let _ = tx.try_send(cmd);
                 }
-                None => tracing::debug!("manual disconnect with no controller connected; ignored"),
+                None => tracing::debug!(?cmd, "command with no controller connected; ignored"),
             }
         }
     }
@@ -266,10 +269,10 @@ mod tests {
         a: Sender<GamepadEvent>,
         b: Sender<GamepadEvent>,
         /// Manual disconnect requests (the engine handle's side).
-        disconnect: Sender<()>,
+        disconnect: Sender<SourceCmd>,
         /// What each worker received.
-        a_dc: Receiver<()>,
-        b_dc: Receiver<()>,
+        a_dc: Receiver<SourceCmd>,
+        b_dc: Receiver<SourceCmd>,
         b_suspend: Arc<AtomicBool>,
     }
 
@@ -473,7 +476,7 @@ mod tests {
         assert_eq!(poll(&mut r.hub), vec![OFF, NS2]);
         assert!(!r.b_suspend.load(Ordering::SeqCst), "BLE promoted: not suspended");
         // Manual disconnect now goes to the promoted owner only.
-        r.disconnect.send(()).unwrap();
+        r.disconnect.send(SourceCmd::Disconnect).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.b_dc.try_iter().count(), 1);
         assert_eq!(r.a_dc.try_iter().count(), 0);
@@ -483,7 +486,7 @@ mod tests {
     fn manual_disconnect_routed_to_owner_only() {
         let mut r = rig();
         // No owner: the request is dropped.
-        r.disconnect.send(()).unwrap();
+        r.disconnect.send(SourceCmd::Disconnect).unwrap();
         assert_eq!(poll(&mut r.hub), vec![]);
         assert!(r.a_dc.try_recv().is_err() && r.b_dc.try_recv().is_err());
 
@@ -492,7 +495,7 @@ mod tests {
         assert_eq!(poll(&mut r.hub), vec![NS2]);
         send(&r.a, &[DS]);
         assert_eq!(poll(&mut r.hub), vec![]);
-        r.disconnect.send(()).unwrap();
+        r.disconnect.send(SourceCmd::Disconnect).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.b_dc.try_iter().count(), 1);
         assert_eq!(r.a_dc.try_iter().count(), 0, "a connected-but-ignored pad stays on");
@@ -500,10 +503,57 @@ mod tests {
         // `b` goes; the waiting `a` is promoted and owns: only `a` is told.
         send(&r.b, &[OFF]);
         assert_eq!(poll(&mut r.hub), vec![OFF, DS]);
-        r.disconnect.send(()).unwrap();
+        r.disconnect.send(SourceCmd::Disconnect).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.a_dc.try_iter().count(), 1);
         assert_eq!(r.b_dc.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn rumble_goes_to_owner_only() {
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        assert_eq!(poll(&mut r.hub), vec![DS]);
+        send(&r.b, &[NS2]);
+        assert_eq!(poll(&mut r.hub), vec![]);
+        r.disconnect.send(SourceCmd::Rumble).unwrap();
+        r.hub.service();
+        assert_eq!(r.a_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Rumble]);
+        assert!(r.b_dc.try_recv().is_err());
+    }
+
+    #[test]
+    fn rumble_without_owner_is_dropped() {
+        let mut r = rig();
+        r.disconnect.send(SourceCmd::Rumble).unwrap();
+        r.hub.service();
+        assert!(r.a_dc.try_recv().is_err() && r.b_dc.try_recv().is_err());
+    }
+
+    #[test]
+    fn promoted_pad_receives_rumble() {
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        poll(&mut r.hub);
+        send(&r.b, &[NS2]);
+        poll(&mut r.hub);
+        send(&r.a, &[OFF]);
+        assert_eq!(poll(&mut r.hub), vec![OFF, NS2]);
+        r.disconnect.send(SourceCmd::Rumble).unwrap();
+        r.hub.service();
+        assert_eq!(r.b_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Rumble]);
+        assert!(r.a_dc.try_recv().is_err());
+    }
+
+    #[test]
+    fn disconnect_still_routes_to_owner() {
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        poll(&mut r.hub);
+        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.hub.service();
+        assert_eq!(r.a_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Disconnect]);
+        assert!(r.b_dc.try_recv().is_err());
     }
 
     #[test]
@@ -513,7 +563,7 @@ mod tests {
         send(&r.a, &[DS]);
         assert_eq!(poll(&mut r.hub), vec![DS]);
         send(&r.a, &[GamepadEvent::ButtonDown(0)]);
-        r.disconnect.send(()).unwrap();
+        r.disconnect.send(SourceCmd::Disconnect).unwrap();
         r.hub.service();
         assert_eq!(r.a_dc.try_iter().count(), 1, "owner told without a poll");
         assert_eq!(r.b_dc.try_iter().count(), 0);

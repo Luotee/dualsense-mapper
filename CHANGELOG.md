@@ -3,6 +3,25 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-10-12
+
+### Added
+
+- Rumble on connect: the DualSense, Switch Pro and Switch 2 Pro give a
+  short, gentle buzz when they connect, so you can feel which pad is
+  active. Only the controller in use buzzes, including when a waiting pad
+  takes over after the first one leaves.
+- New config key `rumble_on_connect` (default `true`). Configs without
+  the key behave as `true`; set it to `false` to turn the buzz off.
+- The Switch Pro handshake now enables vibration (subcommand 0x48).
+
+### Notes
+
+- If the app is paused when a pad connects, the buzz happens on resume.
+- There is no GUI toggle for `rumble_on_connect` yet; it comes with the
+  UX redesign.
+- DualSense firmware older than 0x0224 uses the compatible rumble mode.
+
 ## [2.6.1] - 2026-10-11
 
 ### Fixed

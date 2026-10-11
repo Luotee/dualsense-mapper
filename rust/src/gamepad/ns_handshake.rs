@@ -4,7 +4,8 @@
 //! 1. SPI read of the user stick calibration (0x8010, 0x16 bytes); when it
 //!    lacks the `B2 A1` magic, SPI read of the factory one (0x603D, 0x12);
 //! 2. `0x03 0x30` — switch the pad to the full 0x30 input report;
-//! 3. `0x30 0x01` — player LED 1.
+//! 3. `0x30 0x01` — player LED 1;
+//! 4. `0x48 0x01` — enable vibration (for the rumble on connect).
 //!
 //! The pad may already stream 0x30 / 0x3F reports while we wait, so an ACK
 //! wait skips everything that is not the 0x21 reply for the subcommand just
@@ -35,6 +36,7 @@ const SUBCMD_SPI_READ: u8 = 0x10;
 const SUBCMD_INPUT_MODE: u8 = 0x03;
 const SUBCMD_PLAYER_LED: u8 = 0x30;
 const SUBCMD_TURN_OFF: u8 = 0x06;
+const SUBCMD_ENABLE_VIBRATION: u8 = 0x48;
 const TURN_OFF_ARG: u8 = 0x00;
 const INPUT_MODE_FULL: u8 = 0x30;
 const PLAYER_LED_1: u8 = 0x01;
@@ -75,6 +77,9 @@ pub(crate) fn ns_handshake_counted(
     }
     if link.request(SUBCMD_PLAYER_LED, &[PLAYER_LED_1], |_| true).is_none() {
         tracing::warn!("Switch Pro: player LED not acknowledged");
+    }
+    if link.request(SUBCMD_ENABLE_VIBRATION, &[0x01], |_| true).is_none() {
+        tracing::warn!("Switch Pro: enable vibration not acknowledged");
     }
     cal
 }
@@ -202,6 +207,8 @@ mod tests {
         respond: bool,
         /// Subcmd ids whose first attempt is NACKed (ack bit clear).
         nack_first: RefCell<Vec<u8>>,
+        /// Subcmd ids that get no reply at all.
+        silent: Vec<u8>,
         user_spi: [u8; 0x16],
         factory_spi: [u8; 0x12],
         reads: RefCell<usize>,
@@ -223,6 +230,7 @@ mod tests {
                 queue: RefCell::new(VecDeque::new()),
                 respond,
                 nack_first: RefCell::new(Vec::new()),
+                silent: Vec::new(),
                 user_spi: [0xFF; 0x16],
                 factory_spi: factory_bytes(),
                 reads: RefCell::new(0),
@@ -248,6 +256,9 @@ mod tests {
                 return Ok(data.len());
             }
             let id = data[10];
+            if self.silent.contains(&id) {
+                return Ok(data.len());
+            }
             let mut q = self.queue.borrow_mut();
             // Interleaved traffic the handshake must skip.
             let mut f30 = vec![0u8; 49];
@@ -256,7 +267,7 @@ mod tests {
             let mut f3f = vec![0u8; 12];
             f3f[0] = 0x3F;
             q.push_back(f3f);
-            q.push_back(reply_21(0x48, true, &[]));
+            q.push_back(reply_21(0x40, true, &[]));
             {
                 let mut nack = self.nack_first.borrow_mut();
                 if let Some(pos) = nack.iter().position(|&n| n == id) {
@@ -347,17 +358,17 @@ mod tests {
 
         let writes = io.writes();
         let ids: Vec<u8> = writes.iter().map(|w| w[10]).collect();
-        assert_eq!(ids, vec![0x10, 0x10, 0x03, 0x30], "subcmd order");
+        assert_eq!(ids, vec![0x10, 0x10, 0x03, 0x30, 0x48], "subcmd order");
         assert_eq!(&writes[0][11..16], &spi_read_args(0x8010, 0x16), "user cal read");
         assert_eq!(&writes[1][11..16], &spi_read_args(0x603D, 0x12), "factory cal read");
         assert_eq!(writes[2][11], 0x30, "0x03 arg = 0x30 (full report mode)");
         assert_eq!(writes[3][11], 0x01, "0x30 arg = player LED 1");
         assert!(writes.iter().all(|w| w.len() == 49 && w[0] == 0x01));
         let counters: Vec<u8> = writes.iter().map(|w| w[1]).collect();
-        assert_eq!(counters, vec![0, 1, 2, 3], "one counter per session");
+        assert_eq!(counters, vec![0, 1, 2, 3, 4], "one counter per session");
 
         let gaps = gaps_between_writes(&io.log.borrow());
-        assert_eq!(gaps.len(), 3);
+        assert_eq!(gaps.len(), 4);
         assert!(
             gaps.iter().all(|g| *g >= Duration::from_millis(60)),
             "≥ 60 ms between writes: {gaps:?}"
@@ -386,7 +397,7 @@ mod tests {
         let cal = ns_handshake(&io, &mut sleep);
 
         let ids: Vec<u8> = io.writes().iter().map(|w| w[10]).collect();
-        assert_eq!(ids, vec![0x10, 0x03, 0x30], "no factory read when user cal is valid");
+        assert_eq!(ids, vec![0x10, 0x03, 0x30, 0x48], "no factory read when user cal is valid");
         assert_eq!(cal, parse_user_cal(&user).unwrap());
     }
 
@@ -411,8 +422,8 @@ mod tests {
         let mut counter = 14u8;
         ns_handshake_counted(&io, &mut sleep, &mut counter);
         let counters: Vec<u8> = io.writes().iter().map(|w| w[1]).collect();
-        assert_eq!(counters, vec![14, 15, 0, 1]);
-        assert_eq!(counter, 2, "session counter continues after the handshake");
+        assert_eq!(counters, vec![14, 15, 0, 1, 2]);
+        assert_eq!(counter, 3, "session counter continues after the handshake");
     }
 
     #[test]
@@ -422,7 +433,7 @@ mod tests {
         let mut sleep = sleeper(&io.log);
         ns_handshake(&io, &mut sleep);
         let ids: Vec<u8> = io.writes().iter().map(|w| w[10]).collect();
-        assert_eq!(ids, vec![0x10, 0x10, 0x03, 0x03, 0x30]);
+        assert_eq!(ids, vec![0x10, 0x10, 0x03, 0x03, 0x30, 0x48]);
         let gaps = gaps_between_writes(&io.log.borrow());
         assert!(gaps.iter().all(|g| *g >= Duration::from_millis(60)), "{gaps:?}");
     }
@@ -437,16 +448,19 @@ mod tests {
         assert_eq!(cal, StickCal::default());
 
         let ids: Vec<u8> = io.writes().iter().map(|w| w[10]).collect();
-        // 3 attempts each: user cal, factory cal, 0x03, 0x30.
+        // 3 attempts each: user cal, factory cal, 0x03, 0x30, 0x48.
         assert_eq!(
             ids,
-            vec![0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x03, 0x03, 0x03, 0x30, 0x30, 0x30]
+            vec![
+                0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x03, 0x03, 0x03, 0x30, 0x30, 0x30, 0x48,
+                0x48, 0x48,
+            ]
         );
         let writes = io.writes();
         assert!(writes[..3].iter().all(|w| w[11..16] == spi_read_args(0x8010, 0x16)));
         assert!(writes[3..6].iter().all(|w| w[11..16] == spi_read_args(0x603D, 0x12)));
         // Each ACK wait is bounded by ~100 ms of short read timeouts.
-        assert!(*io.reads.borrow() <= 12 * 20, "reads: {}", io.reads.borrow());
+        assert!(*io.reads.borrow() <= 15 * 20, "reads: {}", io.reads.borrow());
         let gaps = gaps_between_writes(&io.log.borrow());
         assert!(gaps.iter().all(|g| *g >= Duration::from_millis(60)), "{gaps:?}");
     }
@@ -460,5 +474,28 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert_eq!((w[0][1], w[0][10], w[0][11]), (7, 0x03, 0x30));
         assert_eq!(counter, 8);
+    }
+
+    #[test]
+    fn ns_handshake_enables_vibration_last() {
+        let io = FakeNs::new(true);
+        let mut sleep = sleeper(&io.log);
+        let mut counter = 0u8;
+        ns_handshake_counted(&io, &mut sleep, &mut counter);
+        let writes = io.writes();
+        let ids: Vec<u8> = writes.iter().map(|w| w[10]).collect();
+        assert!(ids.ends_with(&[0x03, 0x30, 0x48]), "{ids:x?}");
+        assert_eq!(writes.last().unwrap()[11], 0x01, "0x48 arg = enable");
+    }
+
+    #[test]
+    fn ns_handshake_survives_missing_vibration_ack() {
+        let mut io = FakeNs::new(true);
+        io.silent = vec![0x48];
+        let mut sleep = sleeper(&io.log);
+        let cal = ns_handshake(&io, &mut sleep);
+        let ids: Vec<u8> = io.writes().iter().map(|w| w[10]).collect();
+        assert!(ids.ends_with(&[0x30, 0x48, 0x48, 0x48]), "3 attempts, then give up: {ids:x?}");
+        assert_eq!(cal, parse_factory_cal(&factory_bytes()), "calibration still returned");
     }
 }
