@@ -270,6 +270,19 @@ impl InputStream {
     }
 }
 
+/// How long the streaming select may sleep: until the watchdog fires, the
+/// next rumble step is due (zero if overdue), or `tick`, whichever is first.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn next_wait(
+    now: Instant,
+    watchdog_left: Option<Duration>,
+    rumble_due: Option<Instant>,
+    tick: Duration,
+) -> Duration {
+    let rumble_left = rumble_due.map(|t| t.saturating_duration_since(now));
+    [watchdog_left, rumble_left].into_iter().flatten().fold(tick, Duration::min)
+}
+
 // ─── Windows: btleplug worker ──────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -336,6 +349,7 @@ mod imp {
         CMD_PAIR, CMD_POWER, SPI_CAL_LEN, SPI_LEFT_STICK_CAL, SPI_RIGHT_STICK_CAL, SUB_LED_SET,
         SUB_PAIR_A1, SUB_PAIR_A2, SUB_PAIR_ADDR, SUB_PAIR_COMMIT, SUB_POWER_OFF,
     };
+    use crate::gamepad::rumble::{ns2_vibration_frame, RumblePlan, Step, NS2_BUZZ_OP, NS2_STOP_OP};
     use anyhow::{anyhow, bail, Context, Result};
     use btleplug::api::{
         Central, CentralEvent, Characteristic, ConnectionParameterPreset, Manager as _,
@@ -354,6 +368,8 @@ mod imp {
     const UUID_CMD: u128 = 0x649d4ac9_8eb7_4e6c_af44_1ea54fe5f005;
     /// Command response notify.
     const UUID_RESP: u128 = 0xc765a961_d9d8_4d36_a20a_5315b111836a;
+    /// Vibration write-without-response (rumble frames).
+    const UUID_VIB: u128 = 0xcc483f51_9258_427d_a939_630c31f72b05;
 
     /// Upper bound on any wait before the stop flag is re-checked.
     const TICK: Duration = Duration::from_millis(100);
@@ -661,6 +677,8 @@ mod imp {
         p: &'a Peripheral,
         cmd: Characteristic,
         input: Characteristic,
+        /// Vibration characteristic; `None` → no rumble this session.
+        vib: Option<Characteristic>,
         notes: Notes,
     }
 
@@ -708,6 +726,30 @@ mod imp {
             let write = self.p.write(&self.cmd, pkt, WriteType::WithoutResponse);
             bounded(ctx, GATT_OP_TIMEOUT, "command write", write).await?.context("command write")
         }
+
+        /// Write one vibration frame (without response). Never a request:
+        /// no response is expected and input must keep flowing.
+        async fn vibrate(&self, ctx: &Ctx, frame: &[u8]) -> Result<()> {
+            let Some(vib) = &self.vib else { bail!("no vibration characteristic") };
+            let write = self.p.write(vib, frame, WriteType::WithoutResponse);
+            bounded(ctx, GATT_OP_TIMEOUT, "vibration write", write).await?.context("vibration write")
+        }
+
+        /// The session is ending on purpose (manual disconnect, app stop):
+        /// a pad mid-buzz gets one stop frame, best effort. Not cut short
+        /// by the stop flag (unlike `vibrate`), or an app stop could never
+        /// send it; bounded by `CLEANUP_TIMEOUT` instead.
+        async fn stop_rumble(&self, plan: &mut Option<RumblePlan>, seq: &mut u8) {
+            let (Some(Step::Stop), Some(vib)) = (plan.take().and_then(|mut p| p.abort()), &self.vib)
+            else {
+                return;
+            };
+            let frame = ns2_vibration_frame(*seq, NS2_STOP_OP);
+            *seq = seq.wrapping_add(1);
+            let write = self.p.write(vib, &frame, WriteType::WithoutResponse);
+            let _ = tokio::time::timeout(CLEANUP_TIMEOUT, write).await;
+            tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: stopped early");
+        }
     }
 
     /// Connect, initialize, stream. Returns how the session ended.
@@ -737,10 +779,14 @@ mod imp {
                 .ok_or_else(|| anyhow!("characteristic {u:032x} missing"))
         };
         let (cmd, input_char, resp) = (find(UUID_CMD)?, find(UUID_INPUT)?, find(UUID_RESP)?);
+        let vib = chars.iter().find(|c| c.uuid.as_u128() == UUID_VIB).cloned();
+        if vib.is_none() {
+            tracing::info!("NS2 BLE: vibration characteristic not found; rumble off");
+        }
         // Take the notification stream before enabling notify so no
         // response is missed.
         let notes = p.notifications().await.context("notification stream")?;
-        let mut link = Link { p, cmd, input: input_char, notes };
+        let mut link = Link { p, cmd, input: input_char, vib, notes };
         bounded(ctx, GATT_OP_TIMEOUT, "subscribe response", p.subscribe(&resp))
             .await?
             .context("subscribe response")?;
@@ -775,20 +821,29 @@ mod imp {
         input: &mut InputStream,
     ) -> Result<SessionEnd> {
         let id = link.p.id();
+        let mut plan: Option<RumblePlan> = None;
+        // Vibration frame sequence; wraps (only the low nibble is sent).
+        let mut seq: u8 = 0;
         loop {
             // Checked every iteration: reports arrive every ~15 ms.
             if ctx.stopped() {
+                link.stop_rumble(&mut plan, &mut seq).await;
                 return Ok(SessionEnd::Stopped);
             }
-            // One command per iteration. A `Rumble` is consumed and ignored
-            // here (never ends the session); a `Disconnect` before the pad
+            // One command per iteration. A `Rumble` (re)starts the buzz and
+            // never ends the session; a `Disconnect` before the pad
             // announced is dropped.
             match ctx.cmd_rx.try_recv() {
                 Ok(SourceCmd::Disconnect) if input.announced() => {
+                    link.stop_rumble(&mut plan, &mut seq).await;
                     // Release held keys now, not after the ~2.5 s turn-off.
                     input.finish(&ctx.tx);
                     turn_off(ctx, link).await;
                     return Ok(SessionEnd::TurnedOff);
+                }
+                Ok(SourceCmd::Rumble) if link.vib.is_some() => {
+                    plan = Some(RumblePlan::new(ControllerKind::Ns2Pro, Instant::now()));
+                    tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: start");
                 }
                 Ok(_) | Err(_) => {}
             }
@@ -797,7 +852,11 @@ mod imp {
                 tracing::info!("NS2 Pro: no report for {WATCHDOG_LIMIT:?}");
                 return Ok(SessionEnd::LinkLost);
             }
-            let wait = input.remaining(now).unwrap_or(TICK).min(TICK);
+            play_rumble(ctx, link, &mut plan, &mut seq).await;
+            // Wake for the next rumble step too, never later than the watchdog.
+            let now = Instant::now();
+            let rumble_due = plan.as_ref().and_then(RumblePlan::next_due);
+            let wait = next_wait(now, input.remaining(now), rumble_due, TICK);
             tokio::select! {
                 n = link.notes.next() => match n {
                     Some(n) if n.uuid.as_u128() == UUID_INPUT => {
@@ -818,6 +877,30 @@ mod imp {
                 },
                 _ = tokio::time::sleep(wait) => {}
             }
+        }
+    }
+
+    /// Write every rumble step that is due. A write error drops the plan
+    /// (the session carries on unbuzzed) unless the app is stopping, when
+    /// the plan is kept so the stop check can still send its stop frame.
+    async fn play_rumble(ctx: &Ctx, link: &Link<'_>, plan: &mut Option<RumblePlan>, seq: &mut u8) {
+        let Some(p) = plan.as_mut() else { return };
+        while let Some(step) = p.due(Instant::now()) {
+            let op = if step == Step::Buzz { NS2_BUZZ_OP } else { NS2_STOP_OP };
+            let frame = ns2_vibration_frame(*seq, op);
+            *seq = seq.wrapping_add(1);
+            if let Err(e) = link.vibrate(ctx, &frame).await {
+                if !ctx.stopped() {
+                    tracing::warn!(error = %format!("{e:#}"), "rumble write failed; dropping it");
+                    *plan = None;
+                }
+                return;
+            }
+            p.advance();
+        }
+        if p.finished() {
+            tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: done");
+            *plan = None;
         }
     }
 
@@ -986,6 +1069,19 @@ mod tests {
         w.feed(t0 + Duration::from_millis(900));
         assert!(!w.expired(t0 + Duration::from_millis(1800)));
         assert!(w.expired(t0 + Duration::from_millis(1900)));
+    }
+
+    #[test]
+    fn next_wait_takes_the_earliest_deadline() {
+        let now = Instant::now();
+        let tick = Duration::from_millis(100);
+        assert_eq!(next_wait(now, None, None, tick), tick);
+        assert_eq!(next_wait(now, Some(Duration::from_millis(40)), None, tick), Duration::from_millis(40));
+        assert_eq!(
+            next_wait(now, Some(Duration::from_millis(40)), Some(now + Duration::from_millis(12)), tick),
+            Duration::from_millis(12)
+        );
+        assert_eq!(next_wait(now + Duration::from_millis(5), None, Some(now), tick), Duration::ZERO); // overdue
     }
 
     #[test]
