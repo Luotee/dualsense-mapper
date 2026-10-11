@@ -19,6 +19,7 @@ use super::ns_protocol::{decode_30, StickCal};
 use super::pad::{emit_pad_diff, PadState, BUTTON_SLOTS};
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
+use super::SourceCmd;
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -511,15 +512,15 @@ impl HidSource {
     /// `Searching` and emits no events until the first decoded report.
     /// `params` carries the live touchpad cursor sensitivity and on/off
     /// flag; the engine mutates them through `set_settings`.
-    /// `disconnect_rx` receives manual disconnect signals from the GUI
-    /// (Task 13 wires the actual state transition; ignored here with `_` prefix).
-    pub fn new(params: CursorParams, disconnect_rx: crossbeam_channel::Receiver<()>) -> Result<Self> {
+    /// `cmd_rx` receives the hub's commands: manual disconnect from the GUI,
+    /// and rumble requests.
+    pub fn new(params: CursorParams, cmd_rx: crossbeam_channel::Receiver<SourceCmd>) -> Result<Self> {
         let (tx, rx) = unbounded::<GamepadEvent>();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
         thread::Builder::new()
             .name("dualsense-hid".into())
-            .spawn(move || worker_real(tx, stop_for_thread, params, disconnect_rx))
+            .spawn(move || worker_real(tx, stop_for_thread, params, cmd_rx))
             .map_err(|e| anyhow!("spawning HID worker thread: {e}"))?;
         Ok(Self { rx, stop })
     }
@@ -598,7 +599,7 @@ fn worker_real(
     tx: Sender<GamepadEvent>,
     stop: Arc<AtomicBool>,
     params: CursorParams,
-    disconnect_rx: crossbeam_channel::Receiver<()>,
+    cmd_rx: crossbeam_channel::Receiver<SourceCmd>,
 ) {
     let mut api = match hidapi::HidApi::new() {
         Ok(a) => a,
@@ -640,7 +641,7 @@ fn worker_real(
                 let mut touchpad = TouchpadState::default();
                 let outcome = read_loop(
                     &d, &mut session, &tx, &mut last_state, &mut prev_buttons, &mut touchpad,
-                    &params, &stop, &disconnect_rx,
+                    &params, &stop, &cmd_rx,
                 );
                 // Switch Pro: ask the pad to sleep while the handle is still
                 // open, then drop it below.
@@ -671,9 +672,9 @@ fn worker_real(
             }
             None => {
                 // While Searching with no pad available, still respect
-                // disconnect signal (drain — it's a no-op but consumes the message)
-                // and respect stop.
-                let _ = disconnect_rx.try_recv();
+                // commands (drain — a no-op, but it consumes a Disconnect or
+                // a Rumble meant for a pad that is gone) and respect stop.
+                while cmd_rx.try_recv().is_ok() {}
                 thread::sleep(ENUM_RETRY_INTERVAL);
             }
         }
@@ -696,7 +697,7 @@ fn read_loop(
     touchpad: &mut TouchpadState,
     params: &CursorParams,
     stop: &Arc<AtomicBool>,
-    disconnect_rx: &crossbeam_channel::Receiver<()>,
+    cmd_rx: &crossbeam_channel::Receiver<SourceCmd>,
 ) -> &'static str {
     let mut buf = [0u8; REPORT_LEN_BT];
     let disconnect_after = session.disconnect_after();
@@ -705,8 +706,12 @@ fn read_loop(
     let mut emitted_connected = false;
     while !stop.load(Ordering::SeqCst) {
         // Manual disconnect check — drop device and return to Searching.
-        if disconnect_rx.try_recv().is_ok() {
-            return "manual-disconnect";
+        // A `Rumble` is consumed and never ends the session.
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                SourceCmd::Disconnect => return "manual-disconnect",
+                SourceCmd::Rumble => {}
+            }
         }
         match d.read_timeout(&mut buf, READ_TIMEOUT_MS) {
             Ok(0) => {}
@@ -1204,8 +1209,19 @@ mod read_loop_tests {
     }
 
     fn run(io: &ScriptIo, session: &mut Session) -> (&'static str, Duration, Vec<GamepadEvent>) {
+        run_with_cmds(io, session, vec![])
+    }
+
+    fn run_with_cmds(
+        io: &ScriptIo,
+        session: &mut Session,
+        cmds: Vec<SourceCmd>,
+    ) -> (&'static str, Duration, Vec<GamepadEvent>) {
         let (tx, rx) = unbounded();
-        let (_dtx, drx) = unbounded::<()>();
+        let (dtx, drx) = unbounded::<SourceCmd>();
+        for c in cmds {
+            dtx.send(c).unwrap();
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let mut last_state = None;
         let mut prev_buttons = [false; BUTTON_SLOTS];
@@ -1218,6 +1234,31 @@ mod read_loop_tests {
         );
         let elapsed = t0.elapsed();
         (outcome, elapsed, rx.try_iter().collect())
+    }
+
+    #[test]
+    fn rumble_never_ends_the_session() {
+        let io = ScriptIo::new(vec![Step::Frame(ds_frame()), Step::Frame(ds_frame()), Step::Error]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "read-error");
+    }
+
+    #[test]
+    fn disconnect_cmd_still_ends_the_session() {
+        let io = ScriptIo::new(vec![Step::Frame(ds_frame()), Step::Error]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Disconnect]);
+        assert_eq!(outcome, "manual-disconnect");
+    }
+
+    #[test]
+    fn disconnect_after_rumble_still_ends_the_session() {
+        let io = ScriptIo::new(vec![Step::Frame(ds_frame()), Step::Error]);
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) =
+            run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble, SourceCmd::Disconnect]);
+        assert_eq!(outcome, "manual-disconnect");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //!   * `EngineEvent` — what the loop emits for the activity log.
 
 use crate::config::Config;
-use crate::gamepad::{ControllerKind, CursorParams, GamepadSource};
+use crate::gamepad::{ControllerKind, CursorParams, GamepadSource, SourceCmd};
 use crate::keyboard::KeyboardSink;
 use crate::macro_engine::MacroEngine;
 use crate::mapper::{KeyAction, Mapper};
@@ -102,19 +102,23 @@ struct HandleInner {
     /// Test-only: sender for the fake gamepad source. `None` in production.
     #[doc(hidden)]
     fake_tx: Mutex<Option<crossbeam_channel::Sender<crate::gamepad::GamepadEvent>>>,
-    /// Test-only: manual disconnects the fake source received (routed by
-    /// the hub to it as owner). `None` in production.
+    /// Test-only: commands the fake source received (routed by the hub to
+    /// it as owner). `None` in production.
     #[doc(hidden)]
-    fake_disconnect_rx: Mutex<Option<Receiver<()>>>,
+    fake_cmd_rx: Mutex<Option<Receiver<SourceCmd>>>,
+    /// Test-only: commands drained from `fake_cmd_rx` and not yet counted.
+    #[doc(hidden)]
+    fake_cmd_buf: Mutex<Vec<SourceCmd>>,
     /// Live touchpad cursor parameters, shared with the HID worker.
     /// `set_settings` mutates these through the handle so changes take
     /// effect on the next decoded frame without rebuilding the engine.
     cursor_params: CursorParams,
-    /// Manual disconnect signal — Tauri `disconnect_gamepad` IPC sends
-    /// through this. The gamepad source forwards it to the worker that owns
-    /// the session, which turns its pad off and goes back to searching
-    /// without exiting the thread.
-    disconnect_signal: crossbeam_channel::Sender<()>,
+    /// Commands for the session owner: the Tauri `disconnect_gamepad` IPC
+    /// sends `Disconnect` through this (the worker turns its pad off and
+    /// goes back to searching without exiting the thread); the engine sends
+    /// `Rumble` on connect. The gamepad source forwards each to the worker
+    /// that owns the session.
+    source_cmd: crossbeam_channel::Sender<SourceCmd>,
     /// Status warnings from the gamepad workers (e.g. the NS2 BLE worker's
     /// `ble_rate_limited_win10`). The run loop drains it every tick into
     /// `ControllerStatus.warnings` (kept for the process lifetime).
@@ -218,10 +222,30 @@ impl Handle {
     /// 0 otherwise.
     #[doc(hidden)]
     pub fn fake_disconnects_received(&self) -> usize {
-        match self.inner.fake_disconnect_rx.lock() {
-            Ok(guard) => guard.as_ref().map_or(0, |rx| rx.try_iter().count()),
-            Err(_) => 0,
+        self.fake_cmds_received(SourceCmd::Disconnect)
+    }
+
+    /// How many rumble requests reached the fake source since the last
+    /// call. Works only when spawned via `Engine::spawn_with_fake_gamepad`;
+    /// 0 otherwise.
+    #[doc(hidden)]
+    pub fn fake_rumbles_received(&self) -> usize {
+        self.fake_cmds_received(SourceCmd::Rumble)
+    }
+
+    /// Drain the fake source's command receiver into the shared buffer,
+    /// then remove and count the entries of `kind` (other kinds stay).
+    fn fake_cmds_received(&self, kind: SourceCmd) -> usize {
+        let (Ok(rx), Ok(mut buf)) = (self.inner.fake_cmd_rx.lock(), self.inner.fake_cmd_buf.lock())
+        else {
+            return 0;
+        };
+        if let Some(rx) = rx.as_ref() {
+            buf.extend(rx.try_iter());
         }
+        let before = buf.len();
+        buf.retain(|c| *c != kind);
+        before - buf.len()
     }
 
     /// Inject a status warning as a gamepad worker would. Works only when
@@ -258,7 +282,7 @@ impl Handle {
     /// controller (the same or different) reconnects via the normal
     /// handshake path on next button press.
     pub fn disconnect_current_device(&self) {
-        let _ = self.inner.disconnect_signal.send(());
+        let _ = self.inner.source_cmd.send(SourceCmd::Disconnect);
     }
 }
 
@@ -278,14 +302,14 @@ impl Engine {
             cfg.touchpad_midpoint_x,
             cfg.touchpad_midpoint_y,
         );
-        let (disconnect_tx, disconnect_rx) = crossbeam_channel::bounded::<()>(4);
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
         // Bounded: workers `try_send`, and each warning is sent at most once.
         let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
-        let src = GamepadSource::new(cursor_params.clone(), disconnect_rx, warn_tx)?;
+        let src = GamepadSource::new(cursor_params.clone(), cmd_rx, warn_tx)?;
         // Dry run synthesizes no OS input: that includes the virtual pad.
         let pad: Box<dyn VirtualPad> =
             if dry_run { Box::new(xinput_sink::NullPad) } else { xinput_sink::platform_pad() };
-        Self::spawn_inner(cfg, dry_run, src, cursor_params, disconnect_tx, warn_rx, pad)
+        Self::spawn_inner(cfg, dry_run, src, cursor_params, cmd_tx, warn_rx, pad)
     }
 
     /// Spawn with a fake gamepad source. Events are injected via
@@ -309,17 +333,17 @@ impl Engine {
             cfg.touchpad_midpoint_y,
         );
         let (fake_tx, fake_rx) = unbounded::<crate::gamepad::GamepadEvent>();
-        let (disconnect_tx, disconnect_rx) = crossbeam_channel::bounded::<()>(4);
-        let (source_dc_tx, source_dc_rx) = unbounded::<()>();
-        let src = GamepadSource::fake_with_disconnect(fake_rx, disconnect_rx, source_dc_tx);
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
+        let (source_cmd_tx, source_cmd_rx) = unbounded::<SourceCmd>();
+        let src = GamepadSource::fake_with_disconnect(fake_rx, cmd_rx, source_cmd_tx);
         let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
         let engine = Self::spawn_inner(
-            cfg, /*dry_run=*/true, src, cursor_params, disconnect_tx, warn_rx, pad,
+            cfg, /*dry_run=*/true, src, cursor_params, cmd_tx, warn_rx, pad,
         )?;
         // Install the sender into HandleInner.
         *engine.handle.inner.fake_tx.lock().unwrap() = Some(fake_tx);
         *engine.handle.inner.fake_warn_tx.lock().unwrap() = Some(warn_tx);
-        *engine.handle.inner.fake_disconnect_rx.lock().unwrap() = Some(source_dc_rx);
+        *engine.handle.inner.fake_cmd_rx.lock().unwrap() = Some(source_cmd_rx);
         Ok(engine)
     }
 
@@ -328,7 +352,7 @@ impl Engine {
         dry_run: bool,
         src: GamepadSource,
         cursor_params: CursorParams,
-        disconnect_tx: crossbeam_channel::Sender<()>,
+        source_cmd: crossbeam_channel::Sender<SourceCmd>,
         warn_rx: Receiver<String>,
         pad: Box<dyn VirtualPad>,
     ) -> Result<Self> {
@@ -346,10 +370,11 @@ impl Engine {
             event_rx,
             key_state: key_state.clone(),
             fake_tx: Mutex::new(None),
-            fake_disconnect_rx: Mutex::new(None),
+            fake_cmd_rx: Mutex::new(None),
+            fake_cmd_buf: Mutex::new(Vec::new()),
             current_status: RwLock::new(None),
             cursor_params,
-            disconnect_signal: disconnect_tx,
+            source_cmd,
             warn_rx,
             fake_warn_tx: Mutex::new(None),
             virtual_pad: Arc::downgrade(&pad),
@@ -497,6 +522,14 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                             kind,
                             warnings: status.warnings,
                         });
+                        // Ask the owner for one short rumble. `try_send`: a full
+                        // channel must never stall the engine tick.
+                        if h.config.read().unwrap().rumble_on_connect {
+                            tracing::info!(?kind, "rumble on connect: requested");
+                            if h.source_cmd.try_send(SourceCmd::Rumble).is_err() {
+                                tracing::debug!("rumble request dropped: command channel full");
+                            }
+                        }
                     }
                     crate::gamepad::GamepadEvent::Disconnected => {
                         current_kind = None;

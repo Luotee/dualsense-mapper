@@ -25,3 +25,13 @@ pub use cursor_params::CursorParams;
 pub use events::GamepadEvent;
 pub use hub::SourceHub as GamepadSource;
 pub use pad::{PadState, BUTTON_SLOTS};
+
+/// A request from the engine to the worker that owns the session.
+/// Only `Disconnect` ends a session; `Rumble` never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCmd {
+    /// Manual disconnect (Turn Off): the worker drops its pad.
+    Disconnect,
+    /// One short, gentle rumble on the connected pad.
+    Rumble,
+}

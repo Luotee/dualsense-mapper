@@ -28,6 +28,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
+use super::SourceCmd;
 use super::ns2_protocol::{classify_advert, decode_05, parse_advert, AdvertMatch, Ns2StickCal, NS2_COMPANY_ID};
 use super::pad::{emit_pad_diff, PadState, BUTTON_SLOTS};
 
@@ -281,11 +282,11 @@ pub struct Ns2BleSource {
 #[cfg(windows)]
 impl Ns2BleSource {
     /// Spawn the BLE worker thread. It emits nothing until a pad's first
-    /// decoded report. `disconnect_rx` carries manual disconnect requests
-    /// (ignored while no pad is connected); `warn_tx` receives status
+    /// decoded report. `cmd_rx` carries the hub's commands: manual disconnect
+    /// requests (ignored while no pad is connected) and rumble requests; `warn_tx` receives status
     /// warnings (`WARN_BLE_RATE_LIMITED_WIN10`, at most once per process,
     /// when an NS2 Pro first connects on Windows 10).
-    pub fn new(disconnect_rx: Receiver<()>, warn_tx: Sender<String>) -> anyhow::Result<Self> {
+    pub fn new(cmd_rx: Receiver<SourceCmd>, warn_tx: Sender<String>) -> anyhow::Result<Self> {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -295,7 +296,7 @@ impl Ns2BleSource {
             tx,
             stop: stop.clone(),
             suspend: suspend.clone(),
-            disconnect_rx,
+            cmd_rx,
             warn_tx,
             build: None,
         };
@@ -373,7 +374,7 @@ mod imp {
         pub(super) tx: Sender<GamepadEvent>,
         pub(super) stop: Arc<AtomicBool>,
         pub(super) suspend: Arc<AtomicBool>,
-        pub(super) disconnect_rx: Receiver<()>,
+        pub(super) cmd_rx: Receiver<SourceCmd>,
         pub(super) warn_tx: Sender<String>,
         /// Windows build, read once at thread start.
         pub(super) build: Option<u32>,
@@ -404,9 +405,10 @@ mod imp {
             }
         }
 
-        /// A manual disconnect while no pad is connected is a no-op.
-        fn drain_disconnects(&self) {
-            while self.disconnect_rx.try_recv().is_ok() {}
+        /// A command (manual disconnect or rumble) while no pad is
+        /// connected is a no-op.
+        fn drain_commands(&self) {
+            while self.cmd_rx.try_recv().is_ok() {}
         }
     }
 
@@ -529,7 +531,7 @@ mod imp {
     async fn pause(ctx: &Ctx, d: Duration) {
         let end = Instant::now() + d;
         while !ctx.stopped() {
-            ctx.drain_disconnects();
+            ctx.drain_commands();
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -637,7 +639,7 @@ mod imp {
                 ScanStep::Restart => return Ok(Scan::Restart),
                 ScanStep::Suspend => return Ok(Scan::Suspended),
             }
-            ctx.drain_disconnects();
+            ctx.drain_commands();
             let ev = match tokio::time::timeout(TICK, ble.events.next()).await {
                 Err(_) => continue,
                 Ok(None) => bail!("adapter event stream closed"),
@@ -761,7 +763,7 @@ mod imp {
 
         // ── Streaming ──
         // A request made before this pad was announced is not for it.
-        ctx.drain_disconnects();
+        ctx.drain_commands();
         input.arm(Instant::now());
         stream(ctx, ble, &mut link, input).await
     }
@@ -778,11 +780,17 @@ mod imp {
             if ctx.stopped() {
                 return Ok(SessionEnd::Stopped);
             }
-            if ctx.disconnect_rx.try_recv().is_ok() && input.announced() {
-                // Release held keys now, not after the ~2.5 s turn-off.
-                input.finish(&ctx.tx);
-                turn_off(ctx, link).await;
-                return Ok(SessionEnd::TurnedOff);
+            // One command per iteration. A `Rumble` is consumed and ignored
+            // here (never ends the session); a `Disconnect` before the pad
+            // announced is dropped.
+            match ctx.cmd_rx.try_recv() {
+                Ok(SourceCmd::Disconnect) if input.announced() => {
+                    // Release held keys now, not after the ~2.5 s turn-off.
+                    input.finish(&ctx.tx);
+                    turn_off(ctx, link).await;
+                    return Ok(SessionEnd::TurnedOff);
+                }
+                Ok(_) | Err(_) => {}
             }
             let now = Instant::now();
             if input.expired(now) {
@@ -884,22 +892,22 @@ mod imp {
 
 // ─── Other platforms: stub ─────────────────────────────────────────────────
 
-/// Non-Windows stand-in: never connects, never warns. Manual disconnect
-/// signals are drained so they do not pile up.
+/// Non-Windows stand-in: never connects, never warns. Commands (manual
+/// disconnect, rumble) are drained so they do not pile up.
 #[cfg(not(windows))]
 pub struct Ns2BleSource {
-    disconnect_rx: Receiver<()>,
+    cmd_rx: Receiver<SourceCmd>,
     suspend: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(not(windows))]
 impl Ns2BleSource {
-    pub fn new(disconnect_rx: Receiver<()>, _warn_tx: Sender<String>) -> anyhow::Result<Self> {
-        Ok(Self { disconnect_rx, suspend: Default::default() })
+    pub fn new(cmd_rx: Receiver<SourceCmd>, _warn_tx: Sender<String>) -> anyhow::Result<Self> {
+        Ok(Self { cmd_rx, suspend: Default::default() })
     }
 
     pub fn poll(&mut self, _out: &mut Vec<GamepadEvent>) {
-        while self.disconnect_rx.try_recv().is_ok() {}
+        while self.cmd_rx.try_recv().is_ok() {}
     }
 
     /// Stored only; the stub never scans.
@@ -1106,10 +1114,11 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn stub_never_connects() {
-        let (dtx, drx) = unbounded::<()>();
+        let (dtx, drx) = unbounded::<SourceCmd>();
         let (wtx, wrx) = unbounded::<String>();
         let mut src = Ns2BleSource::new(drx, wtx).unwrap();
-        let _ = dtx.send(());
+        let _ = dtx.send(SourceCmd::Disconnect);
+        let _ = dtx.send(SourceCmd::Rumble);
         let mut out = Vec::new();
         for _ in 0..5 {
             src.poll(&mut out);
@@ -1117,13 +1126,13 @@ mod tests {
         }
         assert!(out.is_empty(), "stub emitted {out:?}");
         assert!(wrx.try_recv().is_err(), "stub sends no warnings");
-        assert!(dtx.is_empty(), "stub drains manual disconnect signals");
+        assert!(dtx.is_empty(), "stub drains commands");
     }
 
     #[test]
     #[cfg(not(windows))]
     fn stub_suspend_flag_is_shared() {
-        let (_dtx, drx) = unbounded::<()>();
+        let (_dtx, drx) = unbounded::<SourceCmd>();
         let (wtx, _wrx) = unbounded::<String>();
         let src = Ns2BleSource::new(drx, wtx).unwrap();
         let flag = src.suspend_flag();
