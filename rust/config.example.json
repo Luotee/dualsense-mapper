@@ -11,6 +11,7 @@
     "Set 'touchpad_cursor_enabled' to false to disable the cursor; sensitivity is in [0.1, 10.0].",
     "'touchpad_midpoint_x' / 'touchpad_midpoint_y' set the quadrant boundary in raw pad coords (default 960/540 = centre of a 1920x1080 pad). If the wrong quadrant fires on click, watch the debug dot in the GUI to see the captured raw position, then tune these values.",
     "mapping_enabled: per-controller switch. true = buttons go through this mapping; false = for DualSense / Switch Pro the app sends nothing and the game reads the controller directly; the Switch 2 Pro instead becomes a virtual Xbox pad (needs ViGEmBus).",
+    "rumble_on_connect: true = the controller gives a short buzz when it becomes the active one; false = no buzz.",
     "Restart the exe after editing — there is no hot reload in v0.1.x.",
     "Fields starting with '_' are documentation only and ignored by the program."
   ],
@@ -76,6 +77,7 @@
   "touchpad_midpoint_y": 540,
   "touchpad_click_freeze_enabled": true,
   "mapping_enabled": {"dualsense": true, "ns_pro": true, "ns2_pro": false},
+  "rumble_on_connect": true,
   "touchpad_accel_slow_threshold": 5,
   "touchpad_accel_fast_threshold": 20,
   "touchpad_accel_gain_slow": 0.5,

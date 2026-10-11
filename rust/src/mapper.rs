@@ -211,6 +211,7 @@ mod tests {
             touchpad_deadzone_radius: 2,
             touchpad_click_freeze_enabled: true,
             mapping_enabled: Default::default(),
+            rumble_on_connect: true,
         }
     }
 
