@@ -3,6 +3,52 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-10-11
+
+### Added
+
+- Nintendo Switch 2 Pro Controller over Bluetooth LE: hold SYNC the first
+  time, afterwards any button reconnects (about 66 Hz on Windows 11).
+- GL / GR / C are bindable as button ids 30 / 31 / 32.
+- Virtual Xbox 360 pad in no-mapping mode (the default for this pad) through
+  an externally installed ViGEmBus. Back buttons, C and Capture are inert
+  there.
+- Turn Off (puts the pad to sleep and disconnects).
+
+### Changed
+
+- One controller at a time: the first to connect is used. When the Switch 2
+  Pro is in use, a DualSense / Switch Pro that connects meanwhile takes over
+  after it disconnects. While a DualSense / Switch Pro is in use the app
+  pauses Switch 2 Pro scanning, so press a button on the Switch 2 Pro again
+  after the other controller disconnects.
+- Iron rule 7 amended: a virtual pad through an externally installed
+  ViGEmBus is allowed for a pad Windows cannot use natively, only while its
+  mapping is OFF.
+- Minimum Rust version is now 1.88.
+
+### Notes
+
+- `ble_rate_limited_win10` (Windows 10, BLE capped at about 17 Hz) and
+  `vigem_missing` (ViGEmBus absent) warnings are reported only in the
+  controller-status IPC/event payload and the log. The GUI does not display
+  them yet (that comes with the UX redesign). If a game gets no input from
+  the Switch 2 Pro in no-mapping mode (the default), install
+  [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)
+  or set `mapping_enabled.ns2_pro` to true.
+- macOS support for the Switch 2 Pro: Phase 2 TBD.
+- The GUI still shows the DualSense silhouette (redesign next).
+- The GUI has no mapping on/off switch yet (it comes with the UX redesign).
+  To switch, edit `mapping_enabled` in `dualsense-mapper.json` (e.g.
+  `"ns2_pro": true`); the running app picks the change up on save.
+- Known issue: a config save within 250 ms of the previous one is not
+  picked up until the next save (fix follows in a patch release).
+
+### Migration
+
+- None; ids 30-32 are added to existing configs automatically. Downgrading to
+  2.5.x after ids 30-32 were written makes the old version reject the config.
+
 ## [2.5.1] - 2026-10-11
 
 ### Fixed

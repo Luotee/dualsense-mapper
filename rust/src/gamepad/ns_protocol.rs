@@ -10,9 +10,9 @@ use super::pad::PadState;
 pub const NS_OUTPUT_LEN: usize = 49;
 
 const NEUTRAL_RUMBLE: [u8; 8] = [0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40];
-const DEFAULT_CENTER: u16 = 2048;
-const DEFAULT_SPAN: u16 = 1400;
-const UNINIT: u16 = 0xFFF;
+pub(super) const DEFAULT_CENTER: u16 = 2048;
+pub(super) const DEFAULT_SPAN: u16 = 1400;
+pub(super) const UNINIT: u16 = 0xFFF;
 
 /// Build an output report 0x01 carrying one subcommand.
 pub fn build_subcmd(counter: u8, id: u8, args: &[u8]) -> [u8; NS_OUTPUT_LEN] {
@@ -83,7 +83,7 @@ pub fn spi_read_args(addr: u32, len: u8) -> [u8; 5] {
 }
 
 /// Unpack two 12-bit values from 3 bytes (x low, y high).
-fn unpack12(b: &[u8]) -> (u16, u16) {
+pub(super) fn unpack12(b: &[u8]) -> (u16, u16) {
     let x = (b[0] as u16) | (((b[1] & 0x0F) as u16) << 8);
     let y = ((b[1] >> 4) as u16) | ((b[2] as u16) << 4);
     (x, y)
@@ -139,7 +139,7 @@ pub fn parse_factory_cal(spi: &[u8]) -> StickCal {
     from_blocks(&spi[0..9], &spi[9..18])
 }
 
-fn norm(raw: u16, c: &AxisCal) -> f32 {
+pub(super) fn norm(raw: u16, c: &AxisCal) -> f32 {
     let d = raw as f32 - c.center as f32;
     let v = if d >= 0.0 { d / c.span_pos.max(1) as f32 } else { d / c.span_neg.max(1) as f32 };
     v.clamp(-1.0, 1.0)

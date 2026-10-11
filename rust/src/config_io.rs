@@ -158,8 +158,8 @@ impl ConfigDoc {
 /// Calls `doc.validate()` first — returns an error without touching the
 /// filesystem if validation fails.  Otherwise writes to a sibling `.tmp`
 /// file and renames it into place so readers never see a partial write.
-/// Migrate v2.0 → v2.1 by inserting missing touchpad quadrant ids
-/// (`ADDED_IDS`: 25..=29) as `Unbound` into both the typed and the raw JSON view.
+/// Migrate older configs by inserting missing ids added since v2.0
+/// (`ADDED_IDS`: 25..=32) as `Unbound` into both the typed and the raw JSON view.
 /// The raw patch keeps the next `write_atomic` round-trip honest.
 fn migrate_touchpad_ids(typed: &mut Config, raw: &mut Value) {
     typed.fill_added_id_defaults();

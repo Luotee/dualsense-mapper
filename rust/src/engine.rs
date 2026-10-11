@@ -15,10 +15,12 @@ use crate::macro_engine::MacroEngine;
 use crate::mapper::{KeyAction, Mapper};
 use crate::mouse::MouseSink;
 use crate::safety::{self, SharedKeyState};
+use crate::virtual_pad::XState;
+use crate::xinput_sink::{self, PadError, SharedPad, VirtualPad};
 use anyhow::Result;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -26,7 +28,9 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
-    ControllerConnected { name: String, transport: String, kind: ControllerKind },
+    /// A controller connected. Sent again, unchanged otherwise, whenever its
+    /// status `warnings` change.
+    ControllerConnected { name: String, transport: String, kind: ControllerKind, warnings: Vec<String> },
     ControllerDisconnected,
     ButtonDown { id: u32 },
     ButtonUp   { id: u32 },
@@ -98,14 +102,29 @@ struct HandleInner {
     /// Test-only: sender for the fake gamepad source. `None` in production.
     #[doc(hidden)]
     fake_tx: Mutex<Option<crossbeam_channel::Sender<crate::gamepad::GamepadEvent>>>,
+    /// Test-only: manual disconnects the fake source received (routed by
+    /// the hub to it as owner). `None` in production.
+    #[doc(hidden)]
+    fake_disconnect_rx: Mutex<Option<Receiver<()>>>,
     /// Live touchpad cursor parameters, shared with the HID worker.
     /// `set_settings` mutates these through the handle so changes take
     /// effect on the next decoded frame without rebuilding the engine.
     cursor_params: CursorParams,
     /// Manual disconnect signal — Tauri `disconnect_gamepad` IPC sends
-    /// through this. HID worker honors it to release the hidapi device
-    /// handle and return to Searching state without exiting the thread.
+    /// through this. The gamepad source forwards it to the worker that owns
+    /// the session, which turns its pad off and goes back to searching
+    /// without exiting the thread.
     disconnect_signal: crossbeam_channel::Sender<()>,
+    /// Status warnings from the gamepad workers (e.g. the NS2 BLE worker's
+    /// `ble_rate_limited_win10`). The run loop drains it every tick into
+    /// `ControllerStatus.warnings` (kept for the process lifetime).
+    warn_rx: Receiver<String>,
+    /// Test-only: sender feeding `warn_rx`. `None` in production.
+    #[doc(hidden)]
+    fake_warn_tx: Mutex<Option<Sender<String>>>,
+    /// The virtual Xbox pad. `Weak`: the engine thread owns it, so it is
+    /// dropped (and unplugged) when that thread ends, even by unwinding.
+    virtual_pad: Weak<Mutex<Box<dyn VirtualPad>>>,
 }
 
 // ─── Handle (GUI-side) ───────────────────────────────────────────────────────
@@ -194,6 +213,34 @@ impl Handle {
         }
     }
 
+    /// How many manual disconnects reached the fake source since the last
+    /// call. Works only when spawned via `Engine::spawn_with_fake_gamepad`;
+    /// 0 otherwise.
+    #[doc(hidden)]
+    pub fn fake_disconnects_received(&self) -> usize {
+        match self.inner.fake_disconnect_rx.lock() {
+            Ok(guard) => guard.as_ref().map_or(0, |rx| rx.try_iter().count()),
+            Err(_) => 0,
+        }
+    }
+
+    /// Inject a status warning as a gamepad worker would. Works only when
+    /// spawned via `Engine::spawn_with_fake_gamepad*`; no-op otherwise.
+    #[doc(hidden)]
+    pub fn fake_warning(&self, w: &str) {
+        if let Ok(guard) = self.inner.fake_warn_tx.lock() {
+            if let Some(ref tx) = *guard {
+                let _ = tx.try_send(w.to_string());
+            }
+        }
+    }
+
+    /// The engine's virtual pad, for the panic hook
+    /// (`xinput_sink::register_global`).
+    pub(crate) fn virtual_pad(&self) -> Weak<Mutex<Box<dyn VirtualPad>>> {
+        self.inner.virtual_pad.clone()
+    }
+
     /// Inject a fake ButtonUp event. Works only when spawned via
     /// `Engine::spawn_with_fake_gamepad`; no-op otherwise.
     #[doc(hidden)]
@@ -205,10 +252,11 @@ impl Handle {
         }
     }
 
-    /// Manual disconnect — send a signal to the HID worker to drop its
-    /// current device handle and return to Searching. The thread does
-    /// NOT exit; a new controller (the same or different) reconnects
-    /// via the normal handshake path on next button press.
+    /// Manual disconnect — the gamepad source forwards it to the worker
+    /// that owns the session (none connected: ignored), which drops its
+    /// device and returns to searching. The thread does NOT exit; a new
+    /// controller (the same or different) reconnects via the normal
+    /// handshake path on next button press.
     pub fn disconnect_current_device(&self) {
         let _ = self.inner.disconnect_signal.send(());
     }
@@ -231,15 +279,29 @@ impl Engine {
             cfg.touchpad_midpoint_y,
         );
         let (disconnect_tx, disconnect_rx) = crossbeam_channel::bounded::<()>(4);
-        let src = GamepadSource::new(cursor_params.clone(), disconnect_rx)?;
-        Self::spawn_inner(cfg, dry_run, src, cursor_params, disconnect_tx)
+        // Bounded: workers `try_send`, and each warning is sent at most once.
+        let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
+        let src = GamepadSource::new(cursor_params.clone(), disconnect_rx, warn_tx)?;
+        // Dry run synthesizes no OS input: that includes the virtual pad.
+        let pad: Box<dyn VirtualPad> =
+            if dry_run { Box::new(xinput_sink::NullPad) } else { xinput_sink::platform_pad() };
+        Self::spawn_inner(cfg, dry_run, src, cursor_params, disconnect_tx, warn_rx, pad)
     }
 
     /// Spawn with a fake gamepad source. Events are injected via
     /// `Handle::fake_button_down` / `Handle::fake_button_up`.
     /// Not part of the stable public API — used by integration tests.
+    ///
+    /// The virtual pad is `NullPad`: tests never plug a real one.
     #[doc(hidden)]
     pub fn spawn_with_fake_gamepad(cfg: Config) -> Result<Self> {
+        Self::spawn_with_fake_gamepad_and_pad(cfg, Box::new(xinput_sink::NullPad))
+    }
+
+    /// `spawn_with_fake_gamepad` with a caller-supplied virtual pad.
+    /// Not part of the stable public API — used by integration tests.
+    #[doc(hidden)]
+    pub fn spawn_with_fake_gamepad_and_pad(cfg: Config, pad: Box<dyn VirtualPad>) -> Result<Self> {
         let cursor_params = CursorParams::with_midpoints(
             cfg.touchpad_cursor_sensitivity,
             cfg.touchpad_cursor_enabled,
@@ -247,11 +309,17 @@ impl Engine {
             cfg.touchpad_midpoint_y,
         );
         let (fake_tx, fake_rx) = unbounded::<crate::gamepad::GamepadEvent>();
-        let src = GamepadSource::fake(fake_rx);
-        let (disconnect_tx, _disconnect_rx) = crossbeam_channel::bounded::<()>(4);
-        let engine = Self::spawn_inner(cfg, /*dry_run=*/true, src, cursor_params, disconnect_tx)?;
+        let (disconnect_tx, disconnect_rx) = crossbeam_channel::bounded::<()>(4);
+        let (source_dc_tx, source_dc_rx) = unbounded::<()>();
+        let src = GamepadSource::fake_with_disconnect(fake_rx, disconnect_rx, source_dc_tx);
+        let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
+        let engine = Self::spawn_inner(
+            cfg, /*dry_run=*/true, src, cursor_params, disconnect_tx, warn_rx, pad,
+        )?;
         // Install the sender into HandleInner.
         *engine.handle.inner.fake_tx.lock().unwrap() = Some(fake_tx);
+        *engine.handle.inner.fake_warn_tx.lock().unwrap() = Some(warn_tx);
+        *engine.handle.inner.fake_disconnect_rx.lock().unwrap() = Some(source_dc_rx);
         Ok(engine)
     }
 
@@ -261,8 +329,11 @@ impl Engine {
         src: GamepadSource,
         cursor_params: CursorParams,
         disconnect_tx: crossbeam_channel::Sender<()>,
+        warn_rx: Receiver<String>,
+        pad: Box<dyn VirtualPad>,
     ) -> Result<Self> {
         let key_state = safety::shared();
+        let pad: SharedPad = Arc::new(Mutex::new(pad));
         let (event_tx, event_rx) = unbounded::<EngineEvent>();
 
         let inner = Arc::new(HandleInner {
@@ -275,14 +346,18 @@ impl Engine {
             event_rx,
             key_state: key_state.clone(),
             fake_tx: Mutex::new(None),
+            fake_disconnect_rx: Mutex::new(None),
             current_status: RwLock::new(None),
             cursor_params,
             disconnect_signal: disconnect_tx,
+            warn_rx,
+            fake_warn_tx: Mutex::new(None),
+            virtual_pad: Arc::downgrade(&pad),
         });
 
         let handle = Handle { inner: inner.clone() };
 
-        let thread = thread::spawn(move || run_loop(inner, src, dry_run));
+        let thread = thread::spawn(move || run_loop(inner, src, dry_run, pad));
         Ok(Engine { thread: Some(thread), handle })
     }
 
@@ -301,7 +376,7 @@ impl Engine {
 
 // ─── Run loop (engine-thread) ─────────────────────────────────────────────────
 
-fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Result<()> {
+fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: SharedPad) -> Result<()> {
     // Read initial config values before the loop.
     let (tick_jitter_ms, min_press_ms) = {
         let cfg = h.config.read().unwrap();
@@ -332,7 +407,25 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
     let mut current_kind: Option<ControllerKind> = None;
     let mut mapping_on = true;
 
+    // Virtual Xbox pad (NS2 Pro, mapping OFF) and the status warnings.
+    let mut pad = PadLink::new(pad);
+    let mut worker_warnings: Vec<String> = Vec::new();
+
     while !h.shutdown.load(Ordering::SeqCst) {
+        // ── Source control, paused or not ────────────────────────────────────
+        // Turn Off stays clickable while paused; its request must reach the
+        // owning worker now, not queue until unpause (`poll` is skipped then).
+        source.service();
+
+        // ── Worker warnings: kept for the process lifetime, deduplicated ─────
+        let mut warnings_changed = false;
+        for w in h.warn_rx.try_iter() {
+            if !worker_warnings.contains(&w) {
+                worker_warnings.push(w);
+                warnings_changed = true;
+            }
+        }
+
         // ── Pause / unpause edge ─────────────────────────────────────────────
         let paused = h.paused.load(Ordering::SeqCst);
         if paused && !last_paused {
@@ -353,8 +446,18 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
         let now_on = mapping_enabled(&h, current_kind);
         if mapping_on && !now_on {
             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            // An OFF edge may retry a plug that failed earlier this session.
+            pad.rearm();
         }
         mapping_on = now_on;
+
+        // ── Virtual pad: plugged only for an NS2 Pro with mapping OFF ────────
+        // After the OFF edge's release above (keys up, then the pad appears);
+        // before polling on the ON edge (pad gone, then keys resume).
+        warnings_changed |= pad.sync(wants_pad(paused, mapping_on, current_kind));
+        if warnings_changed {
+            publish_warnings(&h, status_warnings(&worker_warnings, &pad));
+        }
 
         if !paused {
             // ── Poll gamepad ─────────────────────────────────────────────────
@@ -372,27 +475,34 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
                     }
                     crate::gamepad::GamepadEvent::Connected(kind) => {
                         let kind = *kind;
-                        let status = ControllerStatus {
-                            name: kind.display_name().to_string(),
-                            transport: "BT".to_string(),
-                            kind,
-                            warnings: vec![],
-                        };
-                        *h.current_status.write().unwrap() = Some(status.clone());
-                        let _ = h.event_tx.send(EngineEvent::ControllerConnected {
-                            name: status.name,
-                            transport: status.transport,
-                            kind,
-                        });
                         current_kind = Some(kind);
                         let now_on = mapping_enabled(&h, current_kind);
                         if mapping_on && !now_on {
                             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
                         }
                         mapping_on = now_on;
+                        // A fresh session: neutral pad state, one plug attempt.
+                        pad.reset_session();
+                        pad.sync(wants_pad(paused, mapping_on, current_kind));
+                        let status = ControllerStatus {
+                            name: kind.display_name().to_string(),
+                            transport: "BT".to_string(),
+                            kind,
+                            warnings: status_warnings(&worker_warnings, &pad),
+                        };
+                        *h.current_status.write().unwrap() = Some(status.clone());
+                        let _ = h.event_tx.send(EngineEvent::ControllerConnected {
+                            name: status.name,
+                            transport: status.transport,
+                            kind,
+                            warnings: status.warnings,
+                        });
                     }
                     crate::gamepad::GamepadEvent::Disconnected => {
                         current_kind = None;
+                        // The pad is gone: so is its virtual twin.
+                        pad.sync(false);
+                        pad.reset_session();
                         *h.current_status.write().unwrap() = None;
                         let _ = h.event_tx.send(EngineEvent::ControllerDisconnected);
                         // The pad is gone, so no ButtonUp / stick-neutral will
@@ -405,6 +515,13 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
                         mapper = Mapper::new(mapper.config().clone());
                     }
                     _ => {}
+                }
+
+                // The virtual pad mirrors every NS2 Pro event, whatever the
+                // mapping state (it is pushed only while plugged), and is not
+                // gated on key capture: it types nothing.
+                if current_kind.map_or(false, ControllerKind::needs_virtual_pad) {
+                    pad.feed(&ev);
                 }
 
                 // Gate synth on capture_active.
@@ -442,10 +559,14 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
             }
         }
 
+        // One pad report per tick at most.
+        pad.flush();
+
         thread::sleep(Duration::from_millis(8));
     }
 
     // ── Graceful shutdown ────────────────────────────────────────────────────
+    pad.sync(false);
     macros.stop_all();
     // Drain any final macro releases.
     while let Ok(action) = macro_rx.try_recv() {
@@ -463,6 +584,129 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool) -> Re
 /// No known controller → ON.
 fn mapping_enabled(h: &HandleInner, kind: Option<ControllerKind>) -> bool {
     kind.map_or(true, |k| h.config.read().unwrap().mapping_enabled_for(k))
+}
+
+/// The virtual Xbox pad is plugged only for a connected NS2 Pro with mapping
+/// OFF, and not while paused (no input is forwarded then, so a plugged pad
+/// would freeze whatever it last reported).
+fn wants_pad(paused: bool, mapping_on: bool, kind: Option<ControllerKind>) -> bool {
+    !paused && !mapping_on && kind.map_or(false, ControllerKind::needs_virtual_pad)
+}
+
+/// Warnings for `ControllerStatus`: the workers' (process lifetime), then
+/// the session's `vigem_missing`.
+fn status_warnings(worker: &[String], pad: &PadLink) -> Vec<String> {
+    let mut w = worker.to_vec();
+    if pad.bus_missing {
+        w.push(WARN_VIGEM_MISSING.to_string());
+    }
+    w
+}
+
+/// Store new warnings in the current status and re-send it. No controller
+/// connected: nothing to show (the next `Connected` carries them).
+fn publish_warnings(h: &HandleInner, warnings: Vec<String>) {
+    let mut cur = h.current_status.write().unwrap();
+    if let Some(status) = cur.as_mut() {
+        status.warnings = warnings;
+        let _ = h.event_tx.send(EngineEvent::ControllerConnected {
+            name: status.name.clone(),
+            transport: status.transport.clone(),
+            kind: status.kind,
+            warnings: status.warnings.clone(),
+        });
+    }
+}
+
+/// Status warning: ViGEmBus is not installed, so the NS2 Pro gets no virtual
+/// Xbox pad (mapping ON still works).
+pub const WARN_VIGEM_MISSING: &str = "vigem_missing";
+
+/// The virtual Xbox pad's lifecycle (NS2 Pro with mapping OFF). Owned by the
+/// engine thread; the `SharedPad` is shared only with the panic hook.
+struct PadLink {
+    pad: SharedPad,
+    plugged: bool,
+    /// A plug failed this session. No retry until a fresh `Connected` or a
+    /// mapping ON→OFF edge: a missing bus must not be retried every tick.
+    plug_failed: bool,
+    /// Session warning: ViGEmBus is not installed.
+    bus_missing: bool,
+    state: XState,
+    /// `state` changed since the pad last accepted it.
+    dirty: bool,
+}
+
+impl PadLink {
+    fn new(pad: SharedPad) -> Self {
+        PadLink { pad, plugged: false, plug_failed: false, bus_missing: false, state: XState::default(), dirty: false }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn VirtualPad>> {
+        self.pad.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Plug or unplug to match `want`. Returns whether the session warnings
+    /// changed.
+    fn sync(&mut self, want: bool) -> bool {
+        if want && !self.plugged && !self.plug_failed {
+            let result = self.lock().plug();
+            match result {
+                Ok(()) => {
+                    self.plugged = true;
+                    self.dirty = true; // report the current state right away
+                }
+                Err(e) => {
+                    self.plug_failed = true;
+                    match e {
+                        PadError::BusNotFound => {
+                            tracing::warn!("ViGEmBus is not installed: no virtual Xbox pad");
+                            let changed = !self.bus_missing;
+                            self.bus_missing = true;
+                            return changed;
+                        }
+                        PadError::Unsupported => tracing::debug!("no virtual pad on this platform"),
+                        PadError::Other(msg) => tracing::warn!(error = %msg, "virtual pad plug failed"),
+                    }
+                }
+            }
+        } else if !want && self.plugged {
+            self.lock().unplug();
+            self.plugged = false;
+        }
+        false
+    }
+
+    /// Allow one more plug attempt after a failure.
+    fn rearm(&mut self) {
+        self.plug_failed = false;
+    }
+
+    /// A controller session starts or ends: neutral state, no failed plug,
+    /// no session warning.
+    fn reset_session(&mut self) {
+        self.state = XState::default();
+        self.dirty = true;
+        self.plug_failed = false;
+        self.bus_missing = false;
+    }
+
+    fn feed(&mut self, ev: &crate::gamepad::GamepadEvent) {
+        let before = self.state;
+        self.state.apply(ev);
+        self.dirty |= self.state != before;
+    }
+
+    /// Push the state if it changed. A refused report stays dirty and is
+    /// retried (with the latest state) next tick, so a transient bus refusal
+    /// cannot leave a button pressed in the game.
+    fn flush(&mut self) {
+        if self.plugged && self.dirty {
+            let s = self.state;
+            let accepted = self.lock().update(&s).is_ok();
+            self.dirty = !accepted;
+        }
+    }
 }
 
 /// Actions that synthesize no input — the only ones executed while mapping

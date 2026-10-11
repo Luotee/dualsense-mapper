@@ -98,10 +98,11 @@ pub enum StepAction {
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::Path;
 
-pub const VALID_BUTTON_IDS: std::ops::RangeInclusive<u32> = 0..=29;
+pub const VALID_BUTTON_IDS: std::ops::RangeInclusive<u32> = 0..=32;
 
 /// Button ids added after v2.0, with the label given to an auto-filled entry:
-/// 25..=28 the touchpad quadrants (v2.1.0), 29 Capture (v2.5.0). Missing
+/// 25..=28 the touchpad quadrants (v2.1.0), 29 Capture (v2.5.0),
+/// 30..=32 GL/GR/C (v2.6.0, Switch 2 Pro). Missing
 /// entries in a loaded config are auto-filled as `Unbound` before
 /// validation so older configs continue to load. Auto-fill happens on the
 /// load paths, never inside `validate` (iron rule 1).
@@ -111,6 +112,9 @@ pub const ADDED_IDS: &[(u32, &str)] = &[
     (27, "Touchpad BL"),
     (28, "Touchpad BR"),
     (29, "Capture（Switch 擷取鍵）"),
+    (30, "GL（Switch 2 背鍵左）"),
+    (31, "GR（Switch 2 背鍵右）"),
+    (32, "C（Switch 2 C 鍵）"),
 ];
 
 impl Config {
@@ -213,14 +217,14 @@ impl Config {
         for id in VALID_BUTTON_IDS {
             let key = id.to_string();
             if !self.buttons.contains_key(&key) {
-                bail!("missing button id {id}; config must list all ids 0..=29");
+                bail!("missing button id {id}; config must list all ids 0..=32");
             }
         }
         for k in self.buttons.keys() {
             let id: u32 = k.parse()
-                .map_err(|_| anyhow!("unknown button id {k}; ids must be numeric 0..=29"))?;
+                .map_err(|_| anyhow!("unknown button id {k}; ids must be numeric 0..=32"))?;
             if !VALID_BUTTON_IDS.contains(&id) {
-                bail!("unknown button id {id}; allowed range is 0..=29");
+                bail!("unknown button id {id}; allowed range is 0..=32");
             }
         }
         for (id, entry) in &self.buttons {

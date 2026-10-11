@@ -7,9 +7,10 @@
     "  - 'unbound'  : do nothing (omit 'value')",
     "Ids 25..=28 are the four touchpad quadrants (TL/TR/BL/BR).",
     "Switch Pro (Bluetooth): same table by position — B=0 A=1 Y=2 X=3, −=4 Home=5 +=6, LS=7 RS=8, L=9 R=10, D-pad 11-14, ZL=23 ZR=24, Capture=29. Pair it in Windows Bluetooth settings first.",
+    "Switch 2 Pro (Bluetooth LE): hold SYNC the first time; afterwards any button reconnects. Do NOT pair it in Windows Bluetooth settings. GL=30 GR=31 C=32; mapping_enabled.ns2_pro=false makes it a virtual Xbox pad (needs ViGEmBus).",
     "Set 'touchpad_cursor_enabled' to false to disable the cursor; sensitivity is in [0.1, 10.0].",
     "'touchpad_midpoint_x' / 'touchpad_midpoint_y' set the quadrant boundary in raw pad coords (default 960/540 = centre of a 1920x1080 pad). If the wrong quadrant fires on click, watch the debug dot in the GUI to see the captured raw position, then tune these values.",
-    "mapping_enabled: per-controller switch. true = buttons go through this mapping; false = the app sends nothing and the game reads the controller directly.",
+    "mapping_enabled: per-controller switch. true = buttons go through this mapping; false = for DualSense / Switch Pro the app sends nothing and the game reads the controller directly; the Switch 2 Pro instead becomes a virtual Xbox pad (needs ViGEmBus).",
     "Restart the exe after editing — there is no hot reload in v0.1.x.",
     "Fields starting with '_' are documentation only and ignored by the program."
   ],
@@ -64,7 +65,10 @@
     "26": { "label": "Touchpad TR",              "type": "mouse",   "value": "left" },
     "27": { "label": "Touchpad BL",              "type": "mouse",   "value": "left" },
     "28": { "label": "Touchpad BR",              "type": "mouse",   "value": "left" },
-    "29": { "label": "Capture（Switch 擷取鍵）",   "type": "unbound" }
+    "29": { "label": "Capture（Switch 擷取鍵）",   "type": "unbound" },
+    "30": { "label": "GL（Switch 2 背鍵左）",      "type": "unbound" },
+    "31": { "label": "GR（Switch 2 背鍵右）",      "type": "unbound" },
+    "32": { "label": "C（Switch 2 C 鍵）",         "type": "unbound" }
   },
   "touchpad_cursor_enabled": true,
   "touchpad_cursor_sensitivity": 1.5,

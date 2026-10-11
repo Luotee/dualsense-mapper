@@ -1,8 +1,8 @@
 [package]
 name = "dualsense-mapper"
-version = "2.5.1"
+version = "2.6.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 description = "Map PS5 DualSense buttons and analog inputs to keyboard keys."
 license = "MIT"
 
@@ -30,11 +30,23 @@ anyhow = "1"
 thiserror = "1"
 crossbeam-channel = "0.5"
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+# Switch 2 Pro BLE pairing crypto (gamepad/ns2_protocol.rs): AES-128-ECB + random A1/A2.
+aes = "0.8"
+rand = "0.8"
 tauri = { version = "2", features = ["tray-icon", "image-ico", "devtools"], optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Devices_Bluetooth", "Win32_System_IO"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_Devices_Bluetooth", "Win32_System_IO", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_Input_XboxController"] }
+# Switch 2 Pro BLE worker (gamepad/ns2_ble.rs). btleplug 0.13.4 is the
+# version proven on Win11 hardware; the worker runs its own current-thread
+# tokio runtime on a dedicated std thread.
+btleplug = "0.13.4"
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+futures = "0.3"
+# Virtual Xbox 360 pad for the Switch 2 Pro in no-mapping mode
+# (xinput_sink.rs). User-mode client of an externally installed ViGEmBus.
+vigem-client = "0.1"
 
 [features]
 default = []

@@ -31,6 +31,8 @@ pub fn run(cfg: Config, opts: RunOptions) -> Result<()> {
     // Bind the engine's key state to the global so the panic hook (installed
     // in main::real_main) can drain it on panic. Iron Rule #3, GUI path.
     safety::register_global(engine.handle().key_state());
+    // Same for the virtual Xbox pad: the hook unplugs it.
+    crate::xinput_sink::register_global(engine.handle().virtual_pad());
     let handle = engine.handle();
 
     // Clone handle before the `move` setup closure so `.manage(handle_for_state)`

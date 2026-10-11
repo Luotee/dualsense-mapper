@@ -247,7 +247,7 @@ try {
   check('controller-status connected event (kind, transport BT)', /Connected/.test(statusOn) && /BT/.test(statusOn), statusOn);
 
   const chipRows = await page.locator('#chip-list .chip-row').count();
-  check('chip list renders 30 rows (ids 0..29)', chipRows === 30, `${chipRows} rows`);
+  check('chip list renders 33 rows (ids 0..32)', chipRows === 33, `${chipRows} rows`);
   // v2.5.0: id 29 (Capture, Switch Pro) must be listed and bindable.
   const capRow = page.locator('#chip-list .chip-row[data-id="29"]');
   const capCount = await capRow.count();
@@ -259,6 +259,17 @@ try {
   }
   check('chip row for id 29 (Capture) exists and opens .bind-popup-overlay', capCount === 1 && capOpens,
     `rows=${capCount} popup=${capOpens}`);
+  // v2.6.0: id 32 (C, Switch 2 Pro) must be listed and bindable.
+  const cRow = page.locator('#chip-list .chip-row[data-id="32"]');
+  const cCount = await cRow.count();
+  let cOpens = false;
+  if (cCount === 1) {
+    await cRow.click();
+    cOpens = await popupOpen(page);
+    if (cOpens) await closePopup(page);
+  }
+  check('chip row for id 32 (C) exists and opens .bind-popup-overlay', cCount === 1 && cOpens,
+    `rows=${cCount} popup=${cOpens}`);
   await page.screenshot({ path: path.join(outDir, 'web-main.png') });
 
   // Engine events the frontend listens to — must not throw.
