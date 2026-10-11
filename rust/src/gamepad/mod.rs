@@ -18,6 +18,7 @@ pub mod ns_protocol;
 pub mod ns2_ble;
 pub mod ns2_protocol;
 pub mod pad;
+pub mod rumble;
 
 pub use controller::ControllerKind;
 pub use cursor_params::CursorParams;

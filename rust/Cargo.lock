@@ -1054,6 +1054,7 @@ dependencies = [
  "anyhow",
  "btleplug",
  "clap",
+ "crc32fast",
  "crossbeam-channel",
  "ctrlc",
  "enigo",

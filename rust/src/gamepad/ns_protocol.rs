@@ -9,7 +9,7 @@ use super::pad::PadState;
 
 pub const NS_OUTPUT_LEN: usize = 49;
 
-const NEUTRAL_RUMBLE: [u8; 8] = [0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40];
+pub(crate) const NEUTRAL_RUMBLE: [u8; 8] = [0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40];
 pub(super) const DEFAULT_CENTER: u16 = 2048;
 pub(super) const DEFAULT_SPAN: u16 = 1400;
 pub(super) const UNINIT: u16 = 0xFFF;

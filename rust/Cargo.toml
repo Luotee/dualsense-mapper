@@ -18,6 +18,7 @@ path = "src/lib.rs"
 # gilrs removed in v2.0.0 — DualSense BT raw HID via hidapi only.
 # See docs/superpowers/specs/2026-05-17-v2.0.0-raw-hid-dualsense-design.md.
 hidapi = "2.6"
+crc32fast = "1"
 enigo = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
