@@ -303,7 +303,9 @@ regresses real, observed bugs the codebase already fixed once:
     owner's events. No more `is_connected()` cache, no
     more "must press a button to confirm" UX hack — the radio
     link presence is observed directly via report stream
-    presence/absence.
+    presence/absence. The worker that owns the session may also write
+    rumble output reports to its pad (on connect); these writes never
+    affect connection state.
 
 ## Anti-cheat self-discipline
 
