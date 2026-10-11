@@ -15,8 +15,12 @@
 use super::cursor_params::CursorParams;
 use super::ds_protocol::{build_handshake_buffer, decode_31, REPORT_LEN_BT};
 use super::ns_handshake::{ns_handshake_counted, send_input_mode_full, send_turn_off};
-use super::ns_protocol::{decode_30, StickCal};
+use super::ns_protocol::{decode_30, StickCal, NEUTRAL_RUMBLE};
 use super::pad::{emit_pad_diff, PadState, BUTTON_SLOTS};
+use super::rumble::{
+    ds_firmware_is_v2, ds_report, ns_rumble_report, RumblePlan, Step as RumbleStep,
+    DS_BUZZ_MOTOR, NS_BUZZ,
+};
 use super::controller::ControllerKind;
 use super::events::GamepadEvent;
 use super::SourceCmd;
@@ -454,19 +458,33 @@ impl HidIo for hidapi::HidDevice {
     }
 }
 
+/// Switch Pro drops output reports that come faster than this; every
+/// output write on a session (rumble, 0x3F re-init) keeps this gap.
+const NS_MIN_WRITE_GAP: Duration = Duration::from_millis(30);
+
 /// Per-device-session protocol state: the kind's decoder, the Switch Pro
-/// stick calibration and subcommand counter (one per session), and the
-/// time of the last 0x3F re-init.
+/// stick calibration and subcommand counter (one per session), the time of
+/// the last 0x3F re-init and of the last output write, and the DualSense
+/// rumble flag set (firmware dependent).
 struct Session {
     kind: ControllerKind,
     cal: StickCal,
     ns_counter: u8,
     last_reinit: Option<Instant>,
+    ds_rumble_v2: bool,
+    last_write: Option<Instant>,
 }
 
 impl Session {
     fn new(kind: ControllerKind) -> Self {
-        Session { kind, cal: StickCal::default(), ns_counter: 0, last_reinit: None }
+        Session {
+            kind,
+            cal: StickCal::default(),
+            ns_counter: 0,
+            last_reinit: None,
+            ds_rumble_v2: true,
+            last_write: None,
+        }
     }
 
     fn decode(&self, frame: &[u8]) -> Option<PadState> {
@@ -496,9 +514,82 @@ impl Session {
         if self.last_reinit.is_some_and(|t| now.duration_since(t) < NS_REINIT_INTERVAL) {
             return;
         }
+        // Too close to the last write; the pad keeps sending 0x3F, so a
+        // later report retries.
+        if self.too_soon_to_write(now) {
+            return;
+        }
         self.last_reinit = Some(now);
         tracing::info!("Switch Pro sent 0x3F; re-sending input mode 0x30");
         send_input_mode_full(d, &mut self.ns_counter);
+        self.last_write = Some(Instant::now());
+    }
+
+    /// Switch Pro only: whether a write at `now` would come within
+    /// `NS_MIN_WRITE_GAP` of the last one.
+    fn too_soon_to_write(&self, now: Instant) -> bool {
+        self.kind == ControllerKind::NsPro
+            && self.last_write.is_some_and(|t| now.saturating_duration_since(t) < NS_MIN_WRITE_GAP)
+    }
+
+    /// Sleep out the rest of the Switch Pro write gap (no-op otherwise).
+    fn wait_write_gap(&self) {
+        if let Some(t) = self.last_write.filter(|_| self.kind == ControllerKind::NsPro) {
+            thread::sleep(NS_MIN_WRITE_GAP.saturating_sub(t.elapsed()));
+        }
+    }
+
+    /// Write one rumble step in this kind's output report.
+    fn write_rumble(&mut self, d: &dyn HidIo, step: RumbleStep) -> Result<()> {
+        let buzz = step == RumbleStep::Buzz;
+        let res = match self.kind {
+            ControllerKind::DualSense => {
+                d.write(&ds_report(if buzz { DS_BUZZ_MOTOR } else { 0 }, self.ds_rumble_v2))
+            }
+            ControllerKind::NsPro => {
+                let counter = self.ns_counter;
+                self.ns_counter = (counter + 1) & 0x0F;
+                d.write(&ns_rumble_report(counter, if buzz { NS_BUZZ } else { NEUTRAL_RUMBLE }))
+            }
+            // Not in SUPPORTED_HID; the BLE worker plays its rumble.
+            ControllerKind::Ns2Pro => return Ok(()),
+        };
+        self.last_write = Some(Instant::now());
+        res.map(|_| ())
+    }
+}
+
+/// Write every rumble step that is due. On a Switch Pro a step that would
+/// land within `NS_MIN_WRITE_GAP` of the last write waits for a later loop
+/// iteration (the 4 ms read timeout bounds the delay).
+fn play_rumble(d: &dyn HidIo, session: &mut Session, plan: &mut Option<RumblePlan>) {
+    let Some(p) = plan.as_mut() else { return };
+    let now = Instant::now();
+    while let Some(step) = p.due(now) {
+        if session.too_soon_to_write(Instant::now()) {
+            return;
+        }
+        if let Err(e) = session.write_rumble(d, step) {
+            // Read errors decide liveness; the session carries on unbuzzed.
+            tracing::warn!(error = %e, "rumble write failed; dropping it");
+            *plan = None;
+            return;
+        }
+        p.advance();
+    }
+    if p.finished() {
+        tracing::info!(kind = ?session.kind, "rumble: done");
+        *plan = None;
+    }
+}
+
+/// The session is ending on purpose (manual disconnect, app stop): a pad
+/// mid-buzz gets one stop first, best effort, or it keeps vibrating.
+fn stop_rumble(d: &dyn HidIo, session: &mut Session, plan: &mut Option<RumblePlan>) {
+    if let Some(step) = plan.take().and_then(|mut p| p.abort()) {
+        session.wait_write_gap();
+        let _ = session.write_rumble(d, step);
+        tracing::info!(kind = ?session.kind, "rumble: stopped early");
     }
 }
 
@@ -622,10 +713,15 @@ fn worker_real(
         match device {
             Some((d, kind)) => {
                 tracing::info!("{} opened, attempting handshake", kind.display_name());
+                // A Rumble or Disconnect queued for an earlier session must
+                // not act on this one.
+                drain_commands(&cmd_rx);
                 let mut session = Session::new(kind);
                 match kind {
                     ControllerKind::DualSense => {
                         let _ = try_handshake(&d);
+                        session.ds_rumble_v2 = ds_firmware_is_v2(read_ds_firmware(&d).as_deref());
+                        tracing::info!(v2 = session.ds_rumble_v2, "DualSense rumble mode");
                     }
                     ControllerKind::NsPro => {
                         session.cal = ns_handshake_counted(
@@ -633,6 +729,8 @@ fn worker_real(
                             &mut |t: Duration| thread::sleep(t),
                             &mut session.ns_counter,
                         );
+                        // The handshake's last subcommand counts for the write gap.
+                        session.last_write = Some(Instant::now());
                     }
                     ControllerKind::Ns2Pro => {}
                 }
@@ -646,6 +744,7 @@ fn worker_real(
                 // Switch Pro: ask the pad to sleep while the handle is still
                 // open, then drop it below.
                 if outcome == "manual-disconnect" && kind == ControllerKind::NsPro {
+                    session.wait_write_gap();
                     send_turn_off(&d, &mut session.ns_counter);
                 }
                 // Drop the HID handle so Windows can cleanly drop the
@@ -674,11 +773,24 @@ fn worker_real(
                 // While Searching with no pad available, still respect
                 // commands (drain — a no-op, but it consumes a Disconnect or
                 // a Rumble meant for a pad that is gone) and respect stop.
-                while cmd_rx.try_recv().is_ok() {}
+                drain_commands(&cmd_rx);
                 thread::sleep(ENUM_RETRY_INTERVAL);
             }
         }
     }
+}
+
+/// Consume every queued command without acting on it.
+fn drain_commands(rx: &Receiver<SourceCmd>) {
+    while rx.try_recv().is_ok() {}
+}
+
+/// DualSense feature report 0x20 (firmware info). Any error → `None`.
+fn read_ds_firmware(d: &hidapi::HidDevice) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 64];
+    buf[0] = 0x20;
+    let n = d.get_feature_report(&mut buf).ok()?;
+    Some(buf[..n].to_vec())
 }
 
 fn try_handshake(d: &hidapi::HidDevice) -> Result<()> {
@@ -704,15 +816,23 @@ fn read_loop(
     // Reset only by a decoded report of this kind (iron rule 11).
     let mut deadline = Instant::now() + disconnect_after;
     let mut emitted_connected = false;
+    let mut plan: Option<RumblePlan> = None;
     while !stop.load(Ordering::SeqCst) {
         // Manual disconnect check — drop device and return to Searching.
-        // A `Rumble` is consumed and never ends the session.
+        // A `Rumble` (re)starts the buzz and never ends the session.
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                SourceCmd::Disconnect => return "manual-disconnect",
-                SourceCmd::Rumble => {}
+                SourceCmd::Disconnect => {
+                    stop_rumble(d, session, &mut plan);
+                    return "manual-disconnect";
+                }
+                SourceCmd::Rumble => {
+                    plan = Some(RumblePlan::new(session.kind, Instant::now()));
+                    tracing::info!(kind = ?session.kind, "rumble: start");
+                }
             }
         }
+        play_rumble(d, session, &mut plan);
         match d.read_timeout(&mut buf, READ_TIMEOUT_MS) {
             Ok(0) => {}
             Ok(n) => {
@@ -736,6 +856,7 @@ fn read_loop(
             return "timeout";
         }
     }
+    stop_rumble(d, session, &mut plan);
     "stop-signal"
 }
 
@@ -1134,7 +1255,8 @@ mod tests {
 #[cfg(test)]
 mod read_loop_tests {
     use super::*;
-    use crate::gamepad::ns_protocol::build_subcmd;
+    use crate::gamepad::ns_protocol::{build_subcmd, NEUTRAL_RUMBLE};
+    use crate::gamepad::rumble::{ds_report, ns_rumble_report, DS_BUZZ_MOTOR, NS_BUZZ};
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -1146,24 +1268,55 @@ mod read_loop_tests {
     }
 
     /// Scripted device for `read_loop`. When the script runs out every
-    /// read is a timeout of the requested length.
+    /// read is a timeout of the requested length. Each write is recorded
+    /// with its time. `inject` sends a command on the loop's own channel
+    /// when the Nth read (1-based) happens.
     struct ScriptIo {
         steps: Mutex<VecDeque<Step>>,
         writes: Mutex<Vec<Vec<u8>>>,
+        stamps: Mutex<Vec<Instant>>,
+        fail_writes: bool,
+        reads: Mutex<usize>,
+        inject: Option<(usize, SourceCmd)>,
+        cmd_tx: Mutex<Option<Sender<SourceCmd>>>,
     }
 
     impl ScriptIo {
         fn new(steps: Vec<Step>) -> Self {
-            ScriptIo { steps: Mutex::new(steps.into()), writes: Mutex::new(Vec::new()) }
+            ScriptIo {
+                steps: Mutex::new(steps.into()),
+                writes: Mutex::new(Vec::new()),
+                stamps: Mutex::new(Vec::new()),
+                fail_writes: false,
+                reads: Mutex::new(0),
+                inject: None,
+                cmd_tx: Mutex::new(None),
+            }
         }
     }
 
     impl HidIo for ScriptIo {
         fn write(&self, data: &[u8]) -> Result<usize> {
             self.writes.lock().unwrap().push(data.to_vec());
+            self.stamps.lock().unwrap().push(Instant::now());
+            if self.fail_writes {
+                return Err(anyhow!("write failed"));
+            }
             Ok(data.len())
         }
         fn read_timeout(&self, buf: &mut [u8], ms: i32) -> Result<usize> {
+            let n_read = {
+                let mut r = self.reads.lock().unwrap();
+                *r += 1;
+                *r
+            };
+            if let Some((at, cmd)) = self.inject {
+                if at == n_read {
+                    if let Some(tx) = self.cmd_tx.lock().unwrap().as_ref() {
+                        tx.send(cmd).unwrap();
+                    }
+                }
+            }
             let step = self.steps.lock().unwrap().pop_front();
             match step {
                 Some(Step::Frame(f)) => {
@@ -1222,6 +1375,7 @@ mod read_loop_tests {
         for c in cmds {
             dtx.send(c).unwrap();
         }
+        *io.cmd_tx.lock().unwrap() = Some(dtx.clone());
         let stop = Arc::new(AtomicBool::new(false));
         let mut last_state = None;
         let mut prev_buttons = [false; BUTTON_SLOTS];
@@ -1366,5 +1520,136 @@ mod read_loop_tests {
         let (outcome, _, _) = run(&io, &mut s);
         assert_eq!(outcome, "read-error");
         assert!(io.writes.lock().unwrap().is_empty());
+    }
+
+    /// `n` decoded frames, each followed by a 2 ms idle read, then a read error.
+    fn frames(frame: fn() -> Vec<u8>, n: usize) -> Vec<Step> {
+        let mut v = Vec::new();
+        for _ in 0..n {
+            v.push(Step::Frame(frame()));
+            v.push(Step::Idle(2));
+        }
+        v.push(Step::Error);
+        v
+    }
+
+    fn writes_and_stamps(io: &ScriptIo) -> (Vec<Vec<u8>>, Vec<Instant>) {
+        (io.writes.lock().unwrap().clone(), io.stamps.lock().unwrap().clone())
+    }
+
+    #[test]
+    fn ds_rumble_writes_buzz_then_stop_after_200ms() {
+        let io = ScriptIo::new(frames(ds_frame, 200));
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "read-error", "the rumble must not end the session");
+        let (writes, stamps) = writes_and_stamps(&io);
+        assert_eq!(
+            writes,
+            vec![
+                ds_report(DS_BUZZ_MOTOR, true).to_vec(),
+                ds_report(0, true).to_vec(),
+                ds_report(0, true).to_vec(),
+            ]
+        );
+        let buzz = stamps[1] - stamps[0];
+        assert!(buzz >= Duration::from_millis(200), "buzz lasted {buzz:?}");
+    }
+
+    #[test]
+    fn ds_rumble_uses_old_flags_when_firmware_is_old() {
+        let io = ScriptIo::new(frames(ds_frame, 200));
+        let mut s = Session::new(ControllerKind::DualSense);
+        s.ds_rumble_v2 = false;
+        run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        let (writes, _) = writes_and_stamps(&io);
+        assert!(!writes.is_empty(), "no rumble written");
+        assert_eq!(writes[0][3], 0x03);
+        assert_eq!(writes[0], ds_report(DS_BUZZ_MOTOR, false).to_vec());
+        assert_eq!(writes.last().unwrap(), &ds_report(0, false).to_vec());
+    }
+
+    #[test]
+    fn ds_disconnect_mid_buzz_sends_stop_first() {
+        // Disconnect arrives on the 4th read: well inside the 200 ms buzz.
+        let mut steps = vec![Step::Frame(ds_frame())];
+        steps.extend((0..100).map(|_| Step::Idle(5)));
+        let mut io = ScriptIo::new(steps);
+        io.inject = Some((4, SourceCmd::Disconnect));
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "manual-disconnect");
+        let (writes, _) = writes_and_stamps(&io);
+        assert_eq!(
+            writes,
+            vec![ds_report(DS_BUZZ_MOTOR, true).to_vec(), ds_report(0, true).to_vec()],
+            "buzz, then exactly one stop before the session ends"
+        );
+    }
+
+    #[test]
+    fn rumble_write_error_drops_the_plan_session_continues() {
+        let mut io = ScriptIo::new(frames(ds_frame, 200));
+        io.fail_writes = true;
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "read-error", "read errors decide liveness, not write errors");
+        assert_eq!(io.writes.lock().unwrap().len(), 1, "no retry after a failed write");
+    }
+
+    #[test]
+    fn ns_rumble_frames_are_30ms_apart_and_share_the_counter() {
+        let io = ScriptIo::new(frames(ns_frame, 200));
+        let mut s = Session::new(ControllerKind::NsPro);
+        s.ns_counter = 14;
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "read-error");
+        let (writes, stamps) = writes_and_stamps(&io);
+        assert!(writes.iter().all(|w| w[0] == 0x10), "only rumble reports here");
+        let mut want = Vec::new();
+        for (i, c) in [14u8, 15, 0, 1, 2, 3, 4].into_iter().enumerate() {
+            let motors = if i < 4 { NS_BUZZ } else { NEUTRAL_RUMBLE };
+            want.push(ns_rumble_report(c, motors).to_vec());
+        }
+        assert_eq!(writes, want, "4 buzz + 3 neutral on the session counter");
+        assert_eq!(s.ns_counter, 5);
+        for w in stamps.windows(2) {
+            let gap = w[1] - w[0];
+            assert!(gap >= Duration::from_millis(30), "gap {gap:?} under 30 ms");
+        }
+    }
+
+    #[test]
+    fn ns_reinit_and_rumble_keep_30ms_apart() {
+        // A 0x3F every fifth report while the buzz runs.
+        let mut steps = Vec::new();
+        for i in 0..200 {
+            steps.push(Step::Frame(if i % 5 == 0 { ns_3f() } else { ns_frame() }));
+            steps.push(Step::Idle(2));
+        }
+        steps.push(Step::Error);
+        let io = ScriptIo::new(steps);
+        let mut s = Session::new(ControllerKind::NsPro);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "read-error");
+        let (writes, stamps) = writes_and_stamps(&io);
+        let reinit = writes.iter().filter(|w| w[0] == 0x01 && w[10] == 0x03).count();
+        let rumble = writes.iter().filter(|w| w[0] == 0x10).count();
+        assert!(reinit >= 1, "the 0x3F re-init must still go out: {reinit}");
+        assert_eq!(rumble, 7, "every rumble step still goes out");
+        for w in stamps.windows(2) {
+            let gap = w[1] - w[0];
+            assert!(gap >= Duration::from_millis(30), "gap {gap:?} under 30 ms");
+        }
+    }
+
+    #[test]
+    fn rumble_while_searching_is_drained_without_writes() {
+        // worker_real's Searching branch: no device, so commands are only consumed.
+        let (tx, rx) = unbounded::<SourceCmd>();
+        tx.send(SourceCmd::Rumble).unwrap();
+        tx.send(SourceCmd::Disconnect).unwrap();
+        drain_commands(&rx);
+        assert!(rx.is_empty(), "Rumble and Disconnect must both be consumed");
     }
 }
