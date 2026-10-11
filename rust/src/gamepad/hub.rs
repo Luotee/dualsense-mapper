@@ -23,9 +23,10 @@
 //!   want the engine to see.
 //! * With no owner, other events pass through (the engine's fake source in
 //!   tests sends buttons without `Connected`).
-//! * A manual disconnect reaches only the owner's worker; with no owner it
-//!   is dropped. It is routed by `service`, which the engine calls every
-//!   tick even while paused (when it does not `poll`).
+//! * Commands (manual disconnect, rumble) reach only the owner's worker;
+//!   with no owner they are dropped. They are routed by `service`, which
+//!   the engine calls every tick even while paused (when it does not
+//!   `poll`).
 //! * While a source owns the session, a source that can be suspended (the
 //!   BLE worker) is told to stop scanning: a continuous BLE scan shares the
 //!   radio with the DualSense's Bluetooth link, and its finds would be
