@@ -35,6 +35,12 @@ use super::pad::{emit_pad_diff, PadState, BUTTON_SLOTS};
 /// No decoded report for this long → the link is considered lost.
 pub(crate) const WATCHDOG_LIMIT: Duration = Duration::from_millis(1000);
 
+/// Bound on one vibration frame write. The spike measured ~12 ms per frame;
+/// 100 ms is about 6 connection intervals. A write stalled on a dying link
+/// blocks the stream loop, so this must stay well inside `WATCHDOG_LIMIT`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const VIB_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+
 /// Status warning for Windows builds older than 22000 (Windows 10), whose
 /// BLE stack cannot reach the 15 ms connection interval.
 pub const WARN_BLE_RATE_LIMITED_WIN10: &str = "ble_rate_limited_win10";
@@ -732,13 +738,13 @@ mod imp {
         async fn vibrate(&self, ctx: &Ctx, frame: &[u8]) -> Result<()> {
             let Some(vib) = &self.vib else { bail!("no vibration characteristic") };
             let write = self.p.write(vib, frame, WriteType::WithoutResponse);
-            bounded(ctx, GATT_OP_TIMEOUT, "vibration write", write).await?.context("vibration write")
+            bounded(ctx, VIB_WRITE_TIMEOUT, "vibration write", write).await?.context("vibration write")
         }
 
         /// The session is ending on purpose (manual disconnect, app stop):
         /// a pad mid-buzz gets one stop frame, best effort. Not cut short
         /// by the stop flag (unlike `vibrate`), or an app stop could never
-        /// send it; bounded by `CLEANUP_TIMEOUT` instead.
+        /// send it; bounded by `VIB_WRITE_TIMEOUT` like every frame.
         async fn stop_rumble(&self, plan: &mut Option<RumblePlan>, seq: &mut u8) {
             let (Some(Step::Stop), Some(vib)) = (plan.take().and_then(|mut p| p.abort()), &self.vib)
             else {
@@ -747,8 +753,8 @@ mod imp {
             let frame = ns2_vibration_frame(*seq, NS2_STOP_OP);
             *seq = seq.wrapping_add(1);
             let write = self.p.write(vib, &frame, WriteType::WithoutResponse);
-            let _ = tokio::time::timeout(CLEANUP_TIMEOUT, write).await;
-            tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: stopped early");
+            let sent = matches!(tokio::time::timeout(VIB_WRITE_TIMEOUT, write).await, Ok(Ok(())));
+            tracing::info!(kind = ?ControllerKind::Ns2Pro, sent, "rumble: stopped early");
         }
     }
 
@@ -835,9 +841,10 @@ mod imp {
             // announced is dropped.
             match ctx.cmd_rx.try_recv() {
                 Ok(SourceCmd::Disconnect) if input.announced() => {
-                    link.stop_rumble(&mut plan, &mut seq).await;
-                    // Release held keys now, not after the ~2.5 s turn-off.
+                    // Release held keys now, before the stop frame and the
+                    // ~2.5 s turn-off.
                     input.finish(&ctx.tx);
+                    link.stop_rumble(&mut plan, &mut seq).await;
                     turn_off(ctx, link).await;
                     return Ok(SessionEnd::TurnedOff);
                 }
@@ -1069,6 +1076,14 @@ mod tests {
         w.feed(t0 + Duration::from_millis(900));
         assert!(!w.expired(t0 + Duration::from_millis(1800)));
         assert!(w.expired(t0 + Duration::from_millis(1900)));
+    }
+
+    #[test]
+    fn vibration_write_bound_stays_well_inside_the_watchdog() {
+        // A stalled frame write blocks the stream loop; it must never
+        // stretch past the 1000 ms liveness bound (iron rule 11).
+        assert_eq!(VIB_WRITE_TIMEOUT, Duration::from_millis(100));
+        assert!(VIB_WRITE_TIMEOUT * 5 < WATCHDOG_LIMIT);
     }
 
     #[test]
