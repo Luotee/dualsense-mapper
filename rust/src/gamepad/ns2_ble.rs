@@ -849,7 +849,11 @@ mod imp {
                     return Ok(SessionEnd::TurnedOff);
                 }
                 Ok(SourceCmd::Rumble) if link.vib.is_some() => {
-                    plan = Some(RumblePlan::new(ControllerKind::Ns2Pro, Instant::now()));
+                    let now = Instant::now();
+                    plan = Some(match plan.take() {
+                        Some(old) => old.restarted(now),
+                        None => RumblePlan::new(ControllerKind::Ns2Pro, now),
+                    });
                     tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: start");
                 }
                 Ok(_) | Err(_) => {}
@@ -859,6 +863,9 @@ mod imp {
                 tracing::info!("NS2 Pro: no report for {WATCHDOG_LIMIT:?}");
                 return Ok(SessionEnd::LinkLost);
             }
+            // One frame per iteration, so notifications are drained between
+            // frames even when writes are slow (an overdue step makes the
+            // wait zero).
             play_rumble(ctx, link, &mut plan, &mut seq).await;
             // Wake for the next rumble step too, never later than the watchdog.
             let now = Instant::now();
@@ -887,23 +894,22 @@ mod imp {
         }
     }
 
-    /// Write every rumble step that is due. A write error drops the plan
-    /// (the session carries on unbuzzed) unless the app is stopping, when
-    /// the plan is kept so the stop check can still send its stop frame.
+    /// Write at most one due rumble step. A write error skips the rest of
+    /// the buzz; the stops are still tried. While the app is stopping the
+    /// plan is kept as is, so the stop check can still send its stop frame.
     async fn play_rumble(ctx: &Ctx, link: &Link<'_>, plan: &mut Option<RumblePlan>, seq: &mut u8) {
         let Some(p) = plan.as_mut() else { return };
-        while let Some(step) = p.due(Instant::now()) {
+        if let Some(step) = p.take_due(Instant::now()) {
             let op = if step == Step::Buzz { NS2_BUZZ_OP } else { NS2_STOP_OP };
             let frame = ns2_vibration_frame(*seq, op);
             *seq = seq.wrapping_add(1);
             if let Err(e) = link.vibrate(ctx, &frame).await {
-                if !ctx.stopped() {
-                    tracing::warn!(error = %format!("{e:#}"), "rumble write failed; dropping it");
-                    *plan = None;
+                p.on_write_failed();
+                if ctx.stopped() {
+                    return;
                 }
-                return;
+                tracing::warn!(error = %format!("{e:#}"), ?step, "rumble write failed; dropping it");
             }
-            p.advance();
         }
         if p.finished() {
             tracing::info!(kind = ?ControllerKind::Ns2Pro, "rumble: done");

@@ -18,11 +18,23 @@ pub enum Step {
 }
 
 /// A fixed buzz-then-stop timeline for one pad, driven by the caller's clock.
+///
+/// The caller writes at most one step per `take_due` and reports a failed
+/// write with `on_write_failed`; a step counts as written once the next
+/// call on the plan finds no such report.
 #[derive(Debug)]
 pub struct RumblePlan {
+    kind: ControllerKind,
     start: Instant,
     steps: Vec<(u64, Step)>,
-    sent: usize,
+    /// Index of the first step neither taken nor skipped.
+    next: usize,
+    /// The step `take_due` returned last, not yet known to be written.
+    taken: Option<Step>,
+    /// A buzz was written (or the plan this one replaced left one running).
+    buzzed: bool,
+    /// A stop was written.
+    stopped: bool,
 }
 
 impl RumblePlan {
@@ -45,37 +57,79 @@ impl RumblePlan {
                 steps.extend([(204, Step::Stop), (216, Step::Stop), (228, Step::Stop)]);
             }
         }
-        Self { start, steps, sent: 0 }
+        Self { kind, start, steps, next: 0, taken: None, buzzed: false, stopped: false }
     }
 
-    /// The first unsent step whose time is `<= now`.
-    pub fn due(&self, now: Instant) -> Option<Step> {
-        let &(ms, step) = self.steps.get(self.sent)?;
-        (now >= self.start + Duration::from_millis(ms)).then_some(step)
+    /// The new plan when a `Rumble` arrives while this one runs: the same
+    /// timeline from `now`. A buzz this plan left running still owes a
+    /// stop, so the new plan's `abort` sends one even before its own buzz.
+    pub fn restarted(mut self, now: Instant) -> RumblePlan {
+        self.settle();
+        let mut p = RumblePlan::new(self.kind, now);
+        p.buzzed = self.buzzed && !self.stopped;
+        p
     }
 
-    /// Mark the step `due` returned as sent.
-    pub fn advance(&mut self) {
-        if self.sent < self.steps.len() {
-            self.sent += 1;
+    /// At most one step to write now, marked as taken. Of several due
+    /// steps the first due stop wins (earlier buzzes are skipped); with no
+    /// stop due, the latest due buzz (earlier ones are skipped). A stop is
+    /// never skipped.
+    pub fn take_due(&mut self, now: Instant) -> Option<Step> {
+        self.settle();
+        let due = self.steps[self.next..]
+            .iter()
+            .take_while(|&&(ms, _)| now >= self.start + Duration::from_millis(ms))
+            .count();
+        if due == 0 {
+            return None;
         }
+        let window = self.next..self.next + due;
+        let pick = window
+            .clone()
+            .find(|&i| self.steps[i].1 == Step::Stop)
+            .unwrap_or(window.end - 1);
+        self.next = pick + 1;
+        self.taken = Some(self.steps[pick].1);
+        self.taken
+    }
+
+    /// The step `take_due` returned last was not written. The remaining
+    /// buzzes are skipped; the stops keep their times (a failed stop
+    /// leaves the next one).
+    pub fn on_write_failed(&mut self) {
+        self.taken = None;
+        let next = self.next;
+        let mut i = 0;
+        self.steps.retain(|s| {
+            i += 1;
+            i <= next || s.1 == Step::Stop
+        });
     }
 
     pub fn next_due(&self) -> Option<Instant> {
-        self.steps.get(self.sent).map(|&(ms, _)| self.start + Duration::from_millis(ms))
+        self.steps.get(self.next).map(|&(ms, _)| self.start + Duration::from_millis(ms))
     }
 
     pub fn finished(&self) -> bool {
-        self.sent >= self.steps.len()
+        self.next >= self.steps.len()
     }
 
-    /// Cut the timeline short. `Some(Stop)` if a buzz went out and no stop
-    /// has yet, so the caller must send one; the plan is finished after.
+    /// Cut the timeline short. `Some(Stop)` if a buzz was written and no
+    /// stop has been yet, so the caller must send one; the plan is
+    /// finished after.
     pub fn abort(&mut self) -> Option<Step> {
-        let buzzing = self.steps[..self.sent].iter().any(|s| s.1 == Step::Buzz)
-            && !self.steps[..self.sent].iter().any(|s| s.1 == Step::Stop);
-        self.sent = self.steps.len();
-        buzzing.then_some(Step::Stop)
+        self.settle();
+        self.next = self.steps.len();
+        (self.buzzed && !self.stopped).then_some(Step::Stop)
+    }
+
+    /// The last taken step was not reported failed: it was written.
+    fn settle(&mut self) {
+        match self.taken.take() {
+            Some(Step::Buzz) => self.buzzed = true,
+            Some(Step::Stop) => self.stopped = true,
+            None => {}
+        }
     }
 }
 
@@ -152,7 +206,7 @@ mod tests {
         let mut p = RumblePlan::new(kind, t0);
         let mut out = vec![];
         for ms in 0..400u64 {
-            while let Some(s) = p.due(t0 + Duration::from_millis(ms)) { out.push((ms, s)); p.advance(); }
+            while let Some(s) = p.take_due(t0 + Duration::from_millis(ms)) { out.push((ms, s)); }
         }
         assert!(p.finished());
         out
@@ -218,18 +272,146 @@ mod tests {
         let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
         assert_eq!(p.abort(), None);                       // nothing sent yet
         let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
-        p.due(t0).unwrap(); p.advance();                   // Buzz sent
+        assert_eq!(p.take_due(t0), Some(Step::Buzz));     // Buzz sent
         assert_eq!(p.abort(), Some(Step::Stop));
         assert!(p.finished());
         let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
-        while let Some(_) = p.due(t0 + Duration::from_millis(500)) { p.advance(); }
+        while p.take_due(t0 + Duration::from_millis(500)).is_some() {}
         assert_eq!(p.abort(), None);                       // already stopped
     }
     #[test] fn next_due_tracks_the_next_unsent_step() {
         let t0 = Instant::now();
         let mut p = RumblePlan::new(ControllerKind::NsPro, t0);
         assert_eq!(p.next_due(), Some(t0));
-        p.due(t0).unwrap(); p.advance();
+        assert_eq!(p.take_due(t0), Some(Step::Buzz));
         assert_eq!(p.next_due(), Some(t0 + Duration::from_millis(50)));
+    }
+
+    #[test] fn take_due_returns_one_step_per_call() {
+        use Step::*;
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        // On time: one step per call, and nothing twice.
+        let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(p.take_due(at(0)), Some(Buzz));
+        assert_eq!(p.take_due(at(0)), None);
+        assert_eq!(p.take_due(at(230)), Some(Stop));
+        assert_eq!(p.take_due(at(230)), Some(Stop));
+        assert_eq!(p.take_due(at(230)), None);
+        assert!(p.finished());
+        // First poll at 300 ms: every step is due; the overdue buzz is
+        // skipped and the two stops still come one per call.
+        let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(p.take_due(at(300)), Some(Stop));
+        assert_eq!(p.take_due(at(300)), Some(Stop));
+        assert_eq!(p.take_due(at(300)), None);
+        assert!(p.finished());
+        assert_eq!(p.abort(), None, "the skipped buzz was never written");
+    }
+    #[test] fn take_due_collapses_overdue_buzzes_but_never_skips_a_stop() {
+        use Step::*;
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut p = RumblePlan::new(ControllerKind::Ns2Pro, t0);
+        // First poll at 100 ms: buzzes 0..=96 are due, only one goes out.
+        assert_eq!(p.take_due(at(100)), Some(Buzz));
+        assert_eq!(p.take_due(at(100)), None, "the earlier due buzzes are skipped");
+        assert_eq!(p.next_due(), Some(at(108)));
+        // Poll at 210 ms: buzzes 108..=192 and Stop@204 are due → the stop.
+        assert_eq!(p.take_due(at(210)), Some(Stop));
+        assert_eq!(p.take_due(at(210)), None, "Stop@216 is not due yet");
+        assert_eq!(p.take_due(at(216)), Some(Stop));
+        // Long stall: the last stop still goes out.
+        assert_eq!(p.take_due(at(500)), Some(Stop));
+        assert_eq!(p.take_due(at(500)), None);
+        assert!(p.finished());
+        // A stall in the middle of the buzz: the latest due buzz goes out.
+        let mut p = RumblePlan::new(ControllerKind::NsPro, t0);
+        assert_eq!(p.take_due(at(0)), Some(Buzz));
+        assert_eq!(p.take_due(at(120)), Some(Buzz)); // Buzz@100; Buzz@50 skipped
+        assert_eq!(p.next_due(), Some(at(150)));
+    }
+    #[test] fn failed_buzz_write_still_sends_the_stops() {
+        use Step::*;
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(p.take_due(at(0)), Some(Buzz));
+        p.on_write_failed();
+        assert_eq!(p.take_due(at(199)), None);
+        assert_eq!(p.take_due(at(200)), Some(Stop));
+        assert_eq!(p.take_due(at(230)), Some(Stop));
+        assert!(p.finished());
+        // The remaining buzzes are skipped; the stops keep their times.
+        let mut p = RumblePlan::new(ControllerKind::NsPro, t0);
+        assert_eq!(p.take_due(at(0)), Some(Buzz));
+        assert_eq!(p.take_due(at(50)), Some(Buzz));
+        p.on_write_failed();
+        assert_eq!(p.next_due(), Some(at(200)));
+        assert_eq!(p.take_due(at(150)), None, "no buzz after a failed write");
+        assert_eq!(p.take_due(at(200)), Some(Stop));
+        assert_eq!(p.abort(), None, "Stop@200 went out");
+        // Buzz@0 went out before Buzz@50 failed: the pad still owes a stop.
+        let mut p = RumblePlan::new(ControllerKind::NsPro, t0);
+        assert_eq!(p.take_due(at(0)), Some(Buzz));
+        assert_eq!(p.take_due(at(50)), Some(Buzz));
+        p.on_write_failed();
+        assert_eq!(p.abort(), Some(Stop));
+        // A failed buzz is not a written buzz.
+        let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(p.take_due(at(0)), Some(Buzz));
+        p.on_write_failed();
+        assert_eq!(p.abort(), None);
+    }
+    #[test] fn failed_stop_moves_to_the_next_stop() {
+        use Step::*;
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let buzzed_then_failed_stop = || {
+            let mut p = RumblePlan::new(ControllerKind::DualSense, t0);
+            assert_eq!(p.take_due(at(0)), Some(Buzz));
+            assert_eq!(p.take_due(at(200)), Some(Stop));
+            p.on_write_failed();
+            p
+        };
+        let mut p = buzzed_then_failed_stop();
+        assert_eq!(p.take_due(at(229)), None);
+        assert_eq!(p.take_due(at(230)), Some(Stop));
+        assert!(p.finished());
+        // A failed stop is not a written stop: the pad is still buzzing.
+        assert_eq!(buzzed_then_failed_stop().abort(), Some(Stop));
+        // Every stop failed: the plan ends anyway.
+        let mut p = buzzed_then_failed_stop();
+        assert_eq!(p.take_due(at(230)), Some(Stop));
+        p.on_write_failed();
+        assert!(p.finished());
+    }
+    #[test] fn restarted_plan_owes_the_stop_of_a_buzzing_plan() {
+        use Step::*;
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut old = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(old.take_due(at(0)), Some(Buzz));
+        let mut p = old.restarted(at(100));
+        assert_eq!(p.abort(), Some(Stop), "the old buzz is still running");
+        // The new timeline starts at the restart time.
+        let mut old = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(old.take_due(at(0)), Some(Buzz));
+        let mut p = old.restarted(at(100));
+        assert_eq!(p.take_due(at(99)), None);
+        assert_eq!(p.take_due(at(100)), Some(Buzz));
+        assert_eq!(p.take_due(at(300)), Some(Stop));
+        assert_eq!(p.abort(), None, "a stop went out");
+        // Nothing owed: nothing written yet, or already stopped.
+        let p = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(p.restarted(at(100)).abort(), None);
+        let mut old = RumblePlan::new(ControllerKind::DualSense, t0);
+        assert_eq!(old.take_due(at(0)), Some(Buzz));
+        assert_eq!(old.take_due(at(200)), Some(Stop));
+        assert_eq!(old.restarted(at(210)).abort(), None);
+        // Restarted twice before the new buzz went out: still owed.
+        let mut old = RumblePlan::new(ControllerKind::NsPro, t0);
+        assert_eq!(old.take_due(at(0)), Some(Buzz));
+        assert_eq!(old.restarted(at(10)).restarted(at(20)).abort(), Some(Stop));
     }
 }

@@ -559,23 +559,21 @@ impl Session {
     }
 }
 
-/// Write every rumble step that is due. On a Switch Pro a step that would
+/// Write at most one due rumble step. On a Switch Pro a step that would
 /// land within `NS_MIN_WRITE_GAP` of the last write waits for a later loop
-/// iteration (the 4 ms read timeout bounds the delay).
+/// iteration (the 4 ms read timeout bounds the delay). A failed write skips
+/// the rest of the buzz; the stops are still tried.
 fn play_rumble(d: &dyn HidIo, session: &mut Session, plan: &mut Option<RumblePlan>) {
     let Some(p) = plan.as_mut() else { return };
-    let now = Instant::now();
-    while let Some(step) = p.due(now) {
-        if session.too_soon_to_write(Instant::now()) {
-            return;
-        }
+    if session.too_soon_to_write(Instant::now()) {
+        return;
+    }
+    if let Some(step) = p.take_due(Instant::now()) {
         if let Err(e) = session.write_rumble(d, step) {
-            // Read errors decide liveness; the session carries on unbuzzed.
-            tracing::warn!(error = %e, "rumble write failed; dropping it");
-            *plan = None;
-            return;
+            // Read errors decide liveness; the session carries on.
+            tracing::warn!(error = %e, ?step, "rumble write failed; dropping it");
+            p.on_write_failed();
         }
-        p.advance();
     }
     if p.finished() {
         tracing::info!(kind = ?session.kind, "rumble: done");
@@ -827,7 +825,11 @@ fn read_loop(
                     return "manual-disconnect";
                 }
                 SourceCmd::Rumble => {
-                    plan = Some(RumblePlan::new(session.kind, Instant::now()));
+                    let now = Instant::now();
+                    plan = Some(match plan.take() {
+                        Some(old) => old.restarted(now),
+                        None => RumblePlan::new(session.kind, now),
+                    });
                     tracing::info!(kind = ?session.kind, "rumble: start");
                 }
             }
@@ -1269,15 +1271,16 @@ mod read_loop_tests {
 
     /// Scripted device for `read_loop`. When the script runs out every
     /// read is a timeout of the requested length. Each write is recorded
-    /// with its time. `inject` sends a command on the loop's own channel
-    /// when the Nth read (1-based) happens.
+    /// with its time; `fail_write(n)` makes the Nth write (1-based) fail.
+    /// `inject` sends commands on the loop's own channel when the Nth
+    /// read (1-based) happens.
     struct ScriptIo {
         steps: Mutex<VecDeque<Step>>,
         writes: Mutex<Vec<Vec<u8>>>,
         stamps: Mutex<Vec<Instant>>,
-        fail_writes: bool,
+        fail_write: fn(usize) -> bool,
         reads: Mutex<usize>,
-        inject: Option<(usize, SourceCmd)>,
+        inject: Option<(usize, Vec<SourceCmd>)>,
         cmd_tx: Mutex<Option<Sender<SourceCmd>>>,
     }
 
@@ -1287,7 +1290,7 @@ mod read_loop_tests {
                 steps: Mutex::new(steps.into()),
                 writes: Mutex::new(Vec::new()),
                 stamps: Mutex::new(Vec::new()),
-                fail_writes: false,
+                fail_write: |_| false,
                 reads: Mutex::new(0),
                 inject: None,
                 cmd_tx: Mutex::new(None),
@@ -1297,9 +1300,13 @@ mod read_loop_tests {
 
     impl HidIo for ScriptIo {
         fn write(&self, data: &[u8]) -> Result<usize> {
-            self.writes.lock().unwrap().push(data.to_vec());
+            let n_write = {
+                let mut w = self.writes.lock().unwrap();
+                w.push(data.to_vec());
+                w.len()
+            };
             self.stamps.lock().unwrap().push(Instant::now());
-            if self.fail_writes {
+            if (self.fail_write)(n_write) {
                 return Err(anyhow!("write failed"));
             }
             Ok(data.len())
@@ -1310,10 +1317,10 @@ mod read_loop_tests {
                 *r += 1;
                 *r
             };
-            if let Some((at, cmd)) = self.inject {
-                if at == n_read {
+            if let Some((at, cmds)) = &self.inject {
+                if *at == n_read {
                     if let Some(tx) = self.cmd_tx.lock().unwrap().as_ref() {
-                        tx.send(cmd).unwrap();
+                        cmds.iter().for_each(|&c| tx.send(c).unwrap());
                     }
                 }
             }
@@ -1552,8 +1559,9 @@ mod read_loop_tests {
                 ds_report(0, true).to_vec(),
             ]
         );
+        // The plan starts just before the first write is stamped.
         let buzz = stamps[1] - stamps[0];
-        assert!(buzz >= Duration::from_millis(200), "buzz lasted {buzz:?}");
+        assert!(buzz >= Duration::from_millis(199), "buzz lasted {buzz:?}");
     }
 
     #[test]
@@ -1575,7 +1583,7 @@ mod read_loop_tests {
         let mut steps = vec![Step::Frame(ds_frame())];
         steps.extend((0..100).map(|_| Step::Idle(5)));
         let mut io = ScriptIo::new(steps);
-        io.inject = Some((4, SourceCmd::Disconnect));
+        io.inject = Some((4, vec![SourceCmd::Disconnect]));
         let mut s = Session::new(ControllerKind::DualSense);
         let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
         assert_eq!(outcome, "manual-disconnect");
@@ -1588,13 +1596,65 @@ mod read_loop_tests {
     }
 
     #[test]
-    fn rumble_write_error_drops_the_plan_session_continues() {
+    fn restart_then_disconnect_before_the_new_buzz_still_stops() {
+        // Read 4: a second Rumble restarts the plan and a Disconnect ends
+        // the session in the same iteration, before the new buzz goes out.
+        // The first buzz is still running, so a stop must go out.
+        let mut steps = vec![Step::Frame(ds_frame())];
+        steps.extend((0..100).map(|_| Step::Idle(5)));
+        let mut io = ScriptIo::new(steps);
+        io.inject = Some((4, vec![SourceCmd::Rumble, SourceCmd::Disconnect]));
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "manual-disconnect");
+        let (writes, _) = writes_and_stamps(&io);
+        assert_eq!(
+            writes,
+            vec![ds_report(DS_BUZZ_MOTOR, true).to_vec(), ds_report(0, true).to_vec()],
+            "the restarted plan owes the first buzz's stop"
+        );
+    }
+
+    #[test]
+    fn rumble_write_errors_still_try_the_stops_session_continues() {
         let mut io = ScriptIo::new(frames(ds_frame, 200));
-        io.fail_writes = true;
+        io.fail_write = |_| true;
         let mut s = Session::new(ControllerKind::DualSense);
         let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
         assert_eq!(outcome, "read-error", "read errors decide liveness, not write errors");
-        assert_eq!(io.writes.lock().unwrap().len(), 1, "no retry after a failed write");
+        let (writes, stamps) = writes_and_stamps(&io);
+        assert_eq!(
+            writes,
+            vec![
+                ds_report(DS_BUZZ_MOTOR, true).to_vec(),
+                ds_report(0, true).to_vec(),
+                ds_report(0, true).to_vec(),
+            ],
+            "a failed buzz skips nothing but the buzz; each stop is tried once"
+        );
+        let to_stop = stamps[1] - stamps[0];
+        assert!(to_stop >= Duration::from_millis(199), "stop came after {to_stop:?}");
+    }
+
+    #[test]
+    fn ds_failed_stop_write_retries_the_second_stop() {
+        let mut io = ScriptIo::new(frames(ds_frame, 200));
+        io.fail_write = |n| n == 2;
+        let mut s = Session::new(ControllerKind::DualSense);
+        let (outcome, _, _) = run_with_cmds(&io, &mut s, vec![SourceCmd::Rumble]);
+        assert_eq!(outcome, "read-error");
+        let (writes, stamps) = writes_and_stamps(&io);
+        assert_eq!(
+            writes,
+            vec![
+                ds_report(DS_BUZZ_MOTOR, true).to_vec(),
+                ds_report(0, true).to_vec(),
+                ds_report(0, true).to_vec(),
+            ],
+            "the 3rd write is the second stop"
+        );
+        let to_second = stamps[2] - stamps[0];
+        assert!(to_second >= Duration::from_millis(229), "second stop after {to_second:?}");
     }
 
     #[test]
