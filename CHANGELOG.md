@@ -3,6 +3,15 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-10-11
+
+### Fixed
+
+- Saving `dualsense-mapper.json` again within 250 ms of the previous save
+  (some editors and scripts do this) is now picked up. Previously the app
+  reloaded only the first save of such a burst and kept that older content
+  until the next save, e.g. `mapping_enabled` stuck on the earlier value.
+
 ## [2.6.0] - 2026-10-11
 
 ### Added
