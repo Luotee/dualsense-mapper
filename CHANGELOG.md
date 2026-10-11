@@ -38,6 +38,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or set `mapping_enabled.ns2_pro` to true.
 - macOS support for the Switch 2 Pro: Phase 2 TBD.
 - The GUI still shows the DualSense silhouette (redesign next).
+- The GUI has no mapping on/off switch yet (it comes with the UX redesign).
+  To switch, edit `mapping_enabled` in `dualsense-mapper.json` (e.g.
+  `"ns2_pro": true`); the running app picks the change up on save.
+- Known issue: a config save within 250 ms of the previous one is not
+  picked up until the next save (fix follows in a patch release).
 
 ### Migration
 
