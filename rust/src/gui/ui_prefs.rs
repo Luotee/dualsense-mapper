@@ -1,7 +1,8 @@
 //! UI-only persistence: drawer-open state, last-selected tab, etc.
 //!
 //! Lives at `<exe-dir>/padtokbm.ui.json`, beside the main config (an old
-//! `dualsense-mapper.ui.json` there is adopted on first use).
+//! `dualsense-mapper.ui.json` there is adopted once at startup, see
+//! `file_names::adopt_all`).
 //! Out of band from `Config::validate` — corruption / missing file just
 //! resets to defaults. Never blocks the engine or the GUI startup.
 
@@ -24,10 +25,9 @@ pub struct UiPrefs {
 
 pub fn path_beside(config_path: &std::path::Path) -> PathBuf {
     // Sit next to the running config. Same directory; different filename.
-    use crate::file_names::{adopt_legacy, log_adoption, LEGACY_UI_PREFS_FILE, UI_PREFS_FILE};
+    // A pure path join: adoption of the old name happens once at startup.
     let dir = config_path.parent().unwrap_or_else(|| std::path::Path::new(""));
-    log_adoption(&adopt_legacy(dir, LEGACY_UI_PREFS_FILE, UI_PREFS_FILE));
-    dir.join(UI_PREFS_FILE)
+    dir.join(crate::file_names::UI_PREFS_FILE)
 }
 
 pub fn load(path: &std::path::Path) -> UiPrefs {

@@ -248,15 +248,19 @@ fn pause_on_error() {
 }
 
 fn resolve_config_path(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
-    if let Some(p) = explicit { return Ok(p.to_path_buf()); }
+    if let Some(p) = explicit {
+        // The chosen config is never renamed; only the ui-prefs file beside it.
+        if let Some(dir) = p.parent() {
+            dualsense_mapper::file_names::adopt_ui_prefs(dir);
+        }
+        return Ok(p.to_path_buf());
+    }
     // Portable layout: config sits next to the executable as padtokbm.json.
-    // Drop the folder, move it elsewhere, the config follows. A pre-v3.1.0
-    // dualsense-mapper.json there is adopted (renamed, .bak kept).
+    // Drop the folder, move it elsewhere, the config follows. Pre-v3.1.0
+    // dualsense-mapper.json / .ui.json there are adopted (renamed, .bak kept).
     let exe = std::env::current_exe().context("could not determine executable path")?;
     let dir = exe.parent().context("executable has no parent directory")?;
-    let (path, adoption) = dualsense_mapper::file_names::default_config_path(dir);
-    dualsense_mapper::file_names::log_adoption(&adoption);
-    Ok(path)
+    Ok(dualsense_mapper::file_names::adopt_all(dir))
 }
 
 fn first_run_copy(target: &std::path::Path) -> Result<()> {

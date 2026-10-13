@@ -3,7 +3,7 @@
 //! their bindings.
 
 use dualsense_mapper::file_names::{
-    adopt_legacy, default_config_path, Adoption, CONFIG_FILE, LEGACY_CONFIG_FILE,
+    adopt_all, adopt_legacy, default_config_path, Adoption, CONFIG_FILE, LEGACY_CONFIG_FILE,
     LEGACY_UI_PREFS_FILE, UI_PREFS_FILE,
 };
 use dualsense_mapper::gui::ui_prefs::path_beside;
@@ -34,7 +34,7 @@ fn both_present_touches_nothing() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join(LEGACY_CONFIG_FILE), OLD).unwrap();
     fs::write(dir.path().join(CONFIG_FILE), "new").unwrap();
-    assert!(matches!(adopt_legacy(dir.path(), LEGACY_CONFIG_FILE, CONFIG_FILE), Adoption::AlreadyNew));
+    assert!(matches!(adopt_legacy(dir.path(), LEGACY_CONFIG_FILE, CONFIG_FILE), Adoption::AlreadyNew { .. }));
     assert_eq!(fs::read_to_string(dir.path().join(LEGACY_CONFIG_FILE)).unwrap(), OLD);
     assert_eq!(fs::read_to_string(dir.path().join(CONFIG_FILE)).unwrap(), "new");
     assert!(!dir.path().join("dualsense-mapper.json.bak").exists());
@@ -79,10 +79,49 @@ fn stale_bak_is_overwritten() {
 fn ui_prefs_adopted_beside_config() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join(LEGACY_UI_PREFS_FILE), "{\"last_pad\":\"ns_pro\"}").unwrap();
-    let p = path_beside(&dir.path().join(CONFIG_FILE));
+    let cfg = adopt_all(dir.path());
+    let p = path_beside(&cfg);
     assert_eq!(p, dir.path().join(UI_PREFS_FILE));
     assert_eq!(fs::read_to_string(&p).unwrap(), "{\"last_pad\":\"ns_pro\"}");
     assert!(!dir.path().join(LEGACY_UI_PREFS_FILE).exists());
+}
+
+#[test]
+fn path_beside_does_not_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(LEGACY_UI_PREFS_FILE), "{}").unwrap();
+    let p = path_beside(&dir.path().join(CONFIG_FILE));
+    assert_eq!(p, dir.path().join(UI_PREFS_FILE));
+    assert!(dir.path().join(LEGACY_UI_PREFS_FILE).exists());
+    assert!(!p.exists());
+}
+
+#[test]
+fn adopt_all_moves_both() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(LEGACY_CONFIG_FILE), OLD).unwrap();
+    fs::write(dir.path().join(LEGACY_UI_PREFS_FILE), "{}").unwrap();
+    let cfg = adopt_all(dir.path());
+    assert_eq!(cfg, dir.path().join(CONFIG_FILE));
+    assert_eq!(fs::read_to_string(dir.path().join(CONFIG_FILE)).unwrap(), OLD);
+    assert_eq!(fs::read_to_string(dir.path().join(UI_PREFS_FILE)).unwrap(), "{}");
+    assert!(!dir.path().join(LEGACY_CONFIG_FILE).exists());
+    assert!(!dir.path().join(LEGACY_UI_PREFS_FILE).exists());
+}
+
+#[test]
+fn already_new_reports_legacy_presence() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(CONFIG_FILE), "new").unwrap();
+    assert_eq!(
+        adopt_legacy(dir.path(), LEGACY_CONFIG_FILE, CONFIG_FILE),
+        Adoption::AlreadyNew { legacy_present: false }
+    );
+    fs::write(dir.path().join(LEGACY_CONFIG_FILE), OLD).unwrap();
+    assert_eq!(
+        adopt_legacy(dir.path(), LEGACY_CONFIG_FILE, CONFIG_FILE),
+        Adoption::AlreadyNew { legacy_present: true }
+    );
 }
 
 #[test]
