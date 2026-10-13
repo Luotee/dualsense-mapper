@@ -256,7 +256,10 @@ regresses real, observed bugs the codebase already fixed once:
    uniform event surface. Per-kind protocol modules (DualSense, Switch
    Pro, Switch 2 Pro) and the BLE transport (`ns2_ble.rs`) live in this
    gamepad layer too, and `SourceHub` arbitrates so that one controller
-   owns the session at a time. New platform quirks live here.
+   owns the session at a time. The user stick calibration (`stick_cal`,
+   `gamepad/stick_cal.rs`) is applied in `SourceHub` to the owner's stick
+   events, on top of the pad's factory calibration. New platform quirks
+   live here.
 7. **No process hooking, no DLL injection, no driver.** User-mode
    `SendInput` (Windows) / `CGEvent` (macOS) only, via the `enigo`
    crate. Anything else lands us in actual cheat-software territory.
