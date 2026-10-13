@@ -630,6 +630,37 @@ pub fn set_mapping_enabled_impl(
     Ok(())
 }
 
+// ─── set_rumble_on_connect ───────────────────────────────────────────────────
+
+/// Tauri command: the 連線震動 switch (`rumble_on_connect`, global).
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn set_rumble_on_connect(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    enabled: bool,
+) -> Result<(), String> {
+    set_rumble_on_connect_impl(&*engine, &config_path, enabled).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Pure implementation of `set_rumble_on_connect`.
+pub fn set_rumble_on_connect_impl(engine: &Handle, config_path: &Path, enabled: bool) -> anyhow::Result<()> {
+    mutate_config(engine, config_path, |doc| {
+        doc.set_rumble_on_connect(enabled);
+        Ok(())
+    })
+}
+
+/// Tauri command: the config file's full path, shown in 設定 → 一般.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub fn get_config_path(config_path: State<'_, PathBuf>) -> String {
+    config_path.display().to_string()
+}
+
 // ─── pause_mapper ─────────────────────────────────────────────────────────────
 
 /// Tauri command: pause or unpause the mapper engine.

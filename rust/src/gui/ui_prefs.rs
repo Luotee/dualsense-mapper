@@ -14,6 +14,11 @@ pub struct UiPrefs {
     pub drawer_open: bool,
     #[serde(default)]
     pub last_tab: Option<String>,
+    /// The pad the board showed last (`ControllerKind::slug()`), restored on
+    /// start when no controller is connected. `drawer_open` / `last_tab`
+    /// are left over from the tabbed GUI and unused by the board.
+    #[serde(default)]
+    pub last_pad: Option<String>,
 }
 
 pub fn path_beside(config_path: &std::path::Path) -> PathBuf {

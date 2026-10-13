@@ -137,39 +137,45 @@ must inject a mock `window.__TAURI__` (an `core.invoke` switch + an
 `rust/config.example.json` as the `get_config` reply, and serve
 `rust/web/` over a static HTTP server.
 
-Reproducible recipe (Linux dev host — Playwright + cached chromium,
-headless, no display needed):
+The recipe is automated: `scripts/verify/web-smoke.mjs` (run by
+`scripts/verify.sh --only web`) serves `rust/web/` with a mock that holds
+the config in memory, applies every mutating command, emits
+`config-changed` and records each call with its arguments. Extend it for
+every new control; do not hand-check what it can assert.
 
-```bash
-# cached browser already at ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome
-cd /tmp && npm init -y && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm i playwright-core
-# drive.mjs: addInitScript injects the __TAURI__ mock, page.goto the static
-# server, then click #btn-activity, #btn-settings, every [data-tab], every
-# #pane-macros/#pane-settings button, each #chip-list .chip and controller
-# hotspot (opens .bind-popup-overlay), #btn-disconnect.
-```
-
-The IPC commands a mock must answer: `get_controller_status`,
-`get_config`, `get_ui_prefs`, `get_app_version` (others can return
-`null`). Events the frontend listens for: `controller-status`,
-`button-down/up`, `touchpad-click/hover`, `activity`,
-`config-changed`.
+The board's IPC surface the mock answers: reads `get_controller_status`,
+`get_config`, `get_ui_prefs`, `get_app_version`, `get_config_path`,
+`get_stick_positions`; mutators `set_binding`, `swap_bindings`,
+`set_trigger_mode`, `clear_pad`, `reset_pad`, `set_pad_tables`,
+`set_macro`, `rename_macro`, `delete_macro`, `set_settings`,
+`set_mapping_enabled`, `set_rumble_on_connect`, `save_stick_cal`,
+`reset_stick_cal`, `set_ui_prefs`; fire-and-forget
+`set_capture_active`, `disconnect_gamepad`, `open_config_in_editor`,
+`open_config_folder`. Events the board listens for: `controller-status`
+(`connected` bool + `connected_pads`), `button-down/up`,
+`touchpad-click/hover`, `activity`, `config-changed`.
 
 What a PASS requires, captured as evidence:
-- Every toolbar / tab / pane button clicks without throwing.
-- Clicking a `#chip-list .chip` or a controller hotspot opens the
-  `.bind-popup-overlay` (Key/Macro/Mouse/Unbound + Cancel/Save).
+- Every header / slot / palette / footer / editor / settings control
+  clicks or drags without throwing, and sends the expected command with
+  the expected arguments (`#board [data-pad]`, `[data-slot]`,
+  `[data-tile]`, `[data-act]`, `[data-qs]`, `[data-medit]`, `[data-stab]`).
 - `window` collects **zero** `error` / `unhandledrejection` /
   `pageerror`. (A `GET /favicon.ico 404` is the one expected,
   harmless miss.)
-- Screenshots of the main pane + an open bind popup.
+- Pure modules pass `node --test rust/web/tests/*.test.mjs`.
+- Every glyph of shipped web text is in the bundled Cubic 11 subset
+  (`scripts/verify/font-coverage.py`; re-run `scripts/build-font.py`
+  after adding UI text).
+- Screenshot `rust/target/verify/web-main.png`; README pictures come from
+  `scripts/readme-shots.mjs`.
 
-For scroll / layout bugs, measure don't eyeball: across several
-viewport widths assert `documentElement.scrollWidth == clientWidth`
-(no horizontal overflow) and read computed `overscroll-behavior-x`.
-The window is a fixed `100vh` shell (`.app { overflow: hidden }`) and
-`html, body { overscroll-behavior: none }` — nothing may rubber-band
-or scroll the window itself.
+For scroll / layout bugs, measure don't eyeball: the board is a fixed
+980×640 surface scaled to the window (`app.js`); at several viewport
+sizes assert `scrollWidth == clientWidth`, `scrollHeight ==
+clientHeight` and that `#board` lies inside the viewport, and read
+computed `overscroll-behavior-x` (`html, body { overscroll-behavior:
+none }`) — nothing may rubber-band or scroll the window itself.
 
 ## Self-verification (agent runs this before every release PR)
 

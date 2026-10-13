@@ -27,7 +27,7 @@ pub mod runtime;
 #[cfg(feature = "gui")]
 pub mod tray;
 
-#[cfg(feature = "gui")]
+// Tauri-free (serde only), so tests can reach it without the gui feature.
 pub mod ui_prefs;
 
 #[cfg(feature = "gui")]

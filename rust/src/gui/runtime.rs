@@ -120,6 +120,8 @@ pub fn run(cfg: Config, opts: RunOptions) -> Result<()> {
             crate::gui::commands::pause_mapper,
             crate::gui::commands::open_config_in_editor,
             crate::gui::commands::open_config_folder,
+            crate::gui::commands::set_rumble_on_connect,
+            crate::gui::commands::get_config_path,
             crate::gui::commands::quit,
             crate::gui::commands::set_capture_active,
             crate::gui::commands::disconnect_gamepad,

@@ -110,6 +110,11 @@ impl ConfigDoc {
         self.raw["touchpad_deadzone_radius"] = Value::from(v);
     }
 
+    pub fn set_rumble_on_connect(&mut self, v: bool) {
+        self.typed.rumble_on_connect = v;
+        self.raw["rumble_on_connect"] = Value::from(v);
+    }
+
     pub fn set_touchpad_click_freeze_enabled(&mut self, v: bool) {
         self.typed.touchpad_click_freeze_enabled = v;
         self.raw["touchpad_click_freeze_enabled"] = Value::from(v);

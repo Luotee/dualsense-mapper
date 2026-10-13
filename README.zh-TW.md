@@ -5,15 +5,17 @@
 把 PS5 DualSense 控制器映射成鍵盤按鍵，讓筆電也能用手把玩。2025 年 5 月最初用 Python 寫成，為了讓我太太在 MacBook 上舒服地玩Maplestory Worlds Artale；後來用 Rust 重寫，打包成單一個 Windows 執行檔。
 
 <p align="center">
-  <img src="docs/images/readme/mappings.png" width="820"
-       alt="DualSense Mapper — Mappings 頁籤：左邊是控制器圖，右邊是每顆按鈕綁定的鍵">
+  <img src="docs/images/readme/board.png" width="820"
+       alt="按鍵設定畫面：中間是手把，每顆按鈕的格子用紅線連到它，下方是鍵盤、滑鼠和巨集方塊">
   <br>
-  <sub>直接點控制器圖上的按鈕就能綁定。按鈕名稱來自你的設定檔，可以改成任何你想要的字。</sub>
+  <sub>一個畫面看完：選中的手把每顆按鈕和它的功能。把鍵盤、滑鼠或巨集方塊拖到格子上就綁好了。按下的按鈕（這裡是叉叉）和它送出的鍵會亮起來。</sub>
 </p>
 
 ## 這工具給你什麼
 
-- **點圖綁定，不必編輯 JSON。** 點控制器圖上的按鈕（或下方對應的那一列），選 Key / Macro / Mouse / Unbound。
+- **用拖的綁定，不用改 JSON。** 把鍵、滑鼠鍵或巨集拖到按鈕的格子上；把格子拖到另一格就交換，拖出去就清掉。也可以點一下格子再按想要的鍵。復原／重做（Ctrl+Z／Ctrl+Y）可以一步步退回。
+- **每支手把各一套綁定**——DualSense、Switch Pro、Switch 2 Pro 各自保存。
+- **快捷頁。** 按住 ZL／L2（或 ZR／R2）時，十字鍵和四顆面鍵換成另一組 8 個鍵；也可以把扳機設成一顆普通按鍵。
 - **29 個可映射輸入** —— 四個面板鍵、D-pad、左右蘑菇頭各四向、L1 / R1、L2 / R2 類比板機、L3 / R3、Share / Options / PS，再加觸控板四個象限。
 - **觸控板可當滑鼠游標用**，帶兩段式加速曲線；四個象限各自是獨立的點擊綁定。
 - **巨集延遲隨機化。** 每個步驟的延遲都是 `[min, max]` 區間，不存在固定節拍 —— 循環巨集不會被辨識成腳本特徵。
@@ -25,20 +27,20 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/readme/bind-popup.png" alt="三角鍵的綁定視窗：Key / Macro / Mouse / Unbound，顯示目前的鍵與 Save"></td>
-    <td width="50%"><img src="docs/images/readme/macros.png" alt="Macros 頁籤：一個會重複的巨集，每一步是按下或放開，各有最短～最長延遲（毫秒）"></td>
+    <td width="50%"><img src="docs/images/readme/quickslots.png" alt="Switch 2 Pro 按住 ZL：快捷頁的 F3 格子和鍵盤的 F3 亮起"></td>
+    <td width="50%"><img src="docs/images/readme/capture.png" alt="格子在等按鍵，上方提示「按鍵鼠上的鍵，或點下面的方塊（Esc 取消）」"></td>
   </tr>
   <tr>
-    <td><sub><b>綁定按鈕。</b>在圖上或清單裡點一顆按鈕，選 Key / Macro / Mouse / Unbound，按下想要的鍵，Save。立刻生效，不用重開。</sub></td>
-    <td><sub><b>巨集。</b>一串按下／放開的步驟。每個延遲都是「最短～最長」的範圍，重複執行時節奏不會一模一樣。</sub></td>
+    <td><sub><b>快捷頁。</b>按住 ZL 時，十字鍵和面鍵改用 ZL 這一頁（這裡 ← 送出 F3）。每個扳機都能切換「快捷頁」或「單鍵」。</sub></td>
+    <td><sub><b>按一下就綁。</b>點格子，再按鍵盤或滑鼠（中鍵、右鍵、滾輪）——或點下方的方塊。Esc 取消。</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/images/readme/settings.png" alt="Settings 頁籤：搖桿死區、扳機門檻、防作弊的時間範圍、觸控板游標"></td>
-    <td><img src="docs/images/readme/activity.png" alt="活動紀錄：每次按下的按鈕、送出的鍵、啟動的巨集"></td>
+    <td><img src="docs/images/readme/macro-editor.png" alt="巨集編輯：按下／放開的鍵帽，每步下面有最短～最長的延遲"></td>
+    <td><img src="docs/images/readme/settings.png" alt="設定視窗的一般分頁：設定檔路徑、開啟按鈕、事件紀錄開關和最近六筆事件"></td>
   </tr>
   <tr>
-    <td><sub><b>設定。</b>搖桿死區、扳機按多深算按下、隨機化的按鍵時間，以及觸控板游標。</sub></td>
-    <td><sub><b>活動紀錄</b>（📊）。即時列出每次按下的按鈕、送出的鍵和啟動的巨集，進遊戲前可以先確認綁定對不對。</sub></td>
+    <td><sub><b>巨集。</b>點鍵盤的鍵加步驟，拖曳排順序，拖出去刪除。每個延遲都是「最短～最長」的範圍，重複執行時節奏不會一模一樣。</sub></td>
+    <td><sub><b>設定</b>（齒輪）。設定檔與最近的事件、搖桿、觸控板、隨機化的按鍵時間，四個分頁，按「儲存」才套用。</sub></td>
   </tr>
 </table>
 

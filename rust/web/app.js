@@ -1,53 +1,38 @@
-import { invoke, listen } from './ipc.js';
-import * as mappings  from './mappings.js';
-import * as macros    from './macros.js';
-import * as settings  from './settings.js';
-import * as activity  from './activity.js';
-import * as kbdMirror from './keyboard_mirror.js';
-import * as padView   from './pad_view.js';
+// The key-binding board: one 980×640 screen scaled to the window (spec 3).
 
-const tabs = ['mappings', 'macros', 'settings'];
+import { state, init, onRender } from './board/store.js';
+import { render } from './board/view.js';
+import { wire } from './board/events.js';
+import { resetInk } from './board/tags.js';
+import { startLive } from './board/live.js';
+import { startMacros } from './board/macros.js';
+import { startSettings } from './board/settings.js';
 
-function activate(tab) {
-  tabs.forEach(t => {
-    document.querySelector(`[data-tab="${t}"]`).classList.toggle('active', t === tab);
-    document.getElementById(`pane-${t}`).classList.toggle('active', t === tab);
-  });
+const board = document.getElementById('board');
+
+function fit() {
+  const k = Math.min(innerWidth / 980, innerHeight / 640);
+  board.style.transform = `translate(${(innerWidth - 980 * k) / 2}px, ${(innerHeight - 640 * k) / 2}px) scale(${k})`;
 }
-tabs.forEach(t => {
-  document.querySelector(`[data-tab="${t}"]`).addEventListener('click', () => activate(t));
-});
 
-document.getElementById('btn-settings').addEventListener('click', () => activate('settings'));
-
-const statusEl   = document.querySelector('.status');
-const statusText = document.getElementById('status-text');
-function setStatus(connected, name, transport) {
-  if (connected) {
-    statusEl.classList.add('connected');
-    statusText.textContent = `Connected · ${name}${transport ? ' · ' + transport : ''}`;
-  } else {
-    statusEl.classList.remove('connected');
-    statusText.textContent = 'Waiting for controller…';
-  }
+function paint() {
+  board.className = 'mock' + (mappingOff() ? ' off' : '');
+  board.innerHTML = render(state);
 }
-// Tauri events don't replay — if a pad is already paired before this script
-// runs, the engine's initial Connected emit was sent before our listen()
-// registered. Seed from a synchronous query first.
-try {
-  const initial = await invoke('get_controller_status');
-  padView.setStatus(initial);
-  if (initial) setStatus(true, initial.name, initial.transport);
-} catch (e) {
-  console.warn('get_controller_status failed', e);
-}
-await listen('controller-status', s => {
-  padView.setStatus(s);
-  setStatus(s.connected, s.name, s.transport);
-});
 
-await mappings.init();
-await macros.init();
-await settings.init();
-await activity.init();
-await kbdMirror.init();
+function mappingOff() {
+  const v = state.config?.mapping_enabled?.[state.pad];
+  return (v === undefined ? state.pad !== 'ns2_pro' : v) === false;
+}
+
+onRender(paint);
+await init();
+wire(board);
+await startLive();
+startMacros(board);
+await startSettings(board);
+paint();
+fit();
+addEventListener('resize', fit);
+// Tag ink boxes are measured with the pixel font; re-measure once it loaded.
+if (document.fonts) document.fonts.ready.then(() => { resetInk(); paint(); });

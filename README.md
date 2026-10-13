@@ -5,15 +5,17 @@
 Map a PS5 DualSense controller to keyboard keys for use on a laptop. Originally written in Python in May 2025 to let my wife play MapleStory Worlds Artale comfortably on a MacBook; rewritten in Rust to ship as a single Windows executable.
 
 <p align="center">
-  <img src="docs/images/readme/mappings.png" width="820"
-       alt="DualSense Mapper — Mappings tab: the controller picture on the left, every button's binding on the right">
+  <img src="docs/images/readme/board.png" width="820"
+       alt="The key-binding board: the controller in the middle, every button's slot around it joined by a red line, a keyboard, a mouse and macro tiles below">
   <br>
-  <sub>Click any button on the controller picture to bind it. Button labels come from your config file, so they can be renamed to anything.</sub>
+  <sub>One screen: every button of the selected controller and what it does. Drag a key, mouse button or macro onto a slot to bind it. The pressed button (here Cross) and the key it sends light up.</sub>
 </p>
 
 ## What you get
 
-- **Bind by clicking the pad, not by editing JSON.** Click a button on the picture (or its row underneath) and pick Key / Macro / Mouse / Unbound.
+- **Bind by dragging, not by editing JSON.** Drag a key, mouse button or macro onto a button's slot; drag a slot onto another to swap, out to clear. Or click a slot and press the key you want. 復原／重做 (Ctrl+Z / Ctrl+Y) step back through your changes.
+- **Each controller has its own bindings** — DualSense, Switch Pro and Switch 2 Pro each keep their own table.
+- **Quick-slot pages.** Hold ZL / L2 (or ZR / R2) and the D-pad and face buttons switch to a second set of 8 keys; or set the trigger to act as one ordinary key.
 - **29 mappable inputs** — face buttons, D-pad, both sticks as 4-way digital, L1 / R1, L2 / R2 analog triggers, L3 / R3, Share / Options / PS, plus the four touchpad quadrants.
 - **The touchpad drives the mouse cursor** with a two-stage acceleration curve, and each quadrant is its own click binding.
 - **Macros with randomized delays.** Every step's delay is a `[min, max]` range, never a constant tick — a looping macro doesn't fingerprint as a script.
@@ -25,20 +27,20 @@ Map a PS5 DualSense controller to keyboard keys for use on a laptop. Originally 
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/readme/bind-popup.png" alt="Bind popup for Triangle: Key / Macro / Mouse / Unbound, with the current key and Save"></td>
-    <td width="50%"><img src="docs/images/readme/macros.png" alt="Macros tab: a looping macro with down/up steps, each with a min–max delay in ms"></td>
+    <td width="50%"><img src="docs/images/readme/quickslots.png" alt="Switch 2 Pro board with ZL held: its quick page slot F3 and the F3 key light up"></td>
+    <td width="50%"><img src="docs/images/readme/capture.png" alt="A slot waiting for a key, with the bar 按鍵鼠上的鍵，或點下面的方塊（Esc 取消）"></td>
   </tr>
   <tr>
-    <td><sub><b>Bind a button.</b> Click it on the picture or in the list, pick Key / Macro / Mouse / Unbound, press the key you want, Save. It applies at once — no restart.</sub></td>
-    <td><sub><b>Macros.</b> A list of key down / up steps. Every delay is a min–max range, so a looping macro never repeats the exact same timing.</sub></td>
+    <td><sub><b>Quick-slot pages.</b> While ZL is held, the D-pad and face buttons use the ZL page (here ← sends F3). Each trigger switches between 快捷頁 (page) and 單鍵 (one key).</sub></td>
+    <td><sub><b>Press to bind.</b> Click a slot, then press a key or a mouse button (middle, right, wheel) — or click a tile below. Esc cancels.</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/images/readme/settings.png" alt="Settings tab: stick deadzone, trigger threshold, anti-cheat timing ranges, touchpad cursor"></td>
-    <td><img src="docs/images/readme/activity.png" alt="Activity log: each button press, the key it sent, and the macro it started"></td>
+    <td><img src="docs/images/readme/macro-editor.png" alt="Macro editor: keycap steps (pressed / released) with a min–max delay under each"></td>
+    <td><img src="docs/images/readme/settings.png" alt="Settings window, 一般 tab: config file path, open buttons, event log switch and the last six events"></td>
   </tr>
   <tr>
-    <td><sub><b>Settings.</b> Stick deadzone, how far a trigger counts as pressed, the randomized press timing, and the touchpad cursor.</sub></td>
-    <td><sub><b>Activity log</b> (📊). Every button press, the key it sent and the macro it started, live — handy to check a binding before a game.</sub></td>
+    <td><sub><b>Macros.</b> Click keys on the keyboard to add steps, drag to reorder, drag out to delete. Every delay is a min–max range, so a looping macro never repeats the exact same timing.</sub></td>
+    <td><sub><b>Settings</b> (gear). Config file and the latest events, sticks, touchpad, and the randomized key timing — four tabs, saved with 儲存.</sub></td>
   </tr>
 </table>
 

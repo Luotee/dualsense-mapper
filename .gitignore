@@ -17,9 +17,7 @@ Thumbs.db
 
 memory/
 
-# Trace pipeline intermediate outputs (scripts/trace_*.py +
-# gen_controller_constants.py write here). controller_geom.generated.js
-# is the only artefact we track; the JSON inputs to it are local-only.
+# Local build / tool outputs.
 dist/
 
 # Python script caches

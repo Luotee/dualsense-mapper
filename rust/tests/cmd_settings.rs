@@ -122,3 +122,27 @@ fn reset_settings_writes_factory_defaults() {
     drop(live);
     engine.shutdown();
 }
+
+#[test]
+fn set_rumble_on_connect_persists_and_reaches_engine() {
+    use dualsense_mapper::gui::commands::set_rumble_on_connect_impl;
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.json");
+    std::fs::copy(&example, &path).unwrap();
+    let cfg = dualsense_mapper::config::Config::load_from_path(&path).unwrap();
+    let engine = Engine::spawn_with_fake_gamepad(cfg).unwrap();
+    let h = engine.handle();
+    let help = |p: &std::path::Path| {
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(p).unwrap()).unwrap()["_help"].clone()
+    };
+    let before = help(&path);
+    set_rumble_on_connect_impl(&h, &path, false).unwrap();
+    let disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(disk["rumble_on_connect"], false);
+    assert_eq!(help(&path), before);
+    assert!(!h.config_read().rumble_on_connect);
+    set_rumble_on_connect_impl(&h, &path, true).unwrap();
+    assert!(h.config_read().rumble_on_connect);
+    engine.shutdown();
+}
