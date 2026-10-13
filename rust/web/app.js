@@ -6,6 +6,7 @@ import { wire } from './board/events.js';
 import { resetInk } from './board/tags.js';
 import { startLive } from './board/live.js';
 import { startMacros } from './board/macros.js';
+import { startSettings } from './board/settings.js';
 
 const board = document.getElementById('board');
 
@@ -29,6 +30,7 @@ await init();
 wire(board);
 await startLive();
 startMacros(board);
+await startSettings(board);
 paint();
 fit();
 addEventListener('resize', fit);

@@ -516,6 +516,75 @@ try {
   await settle(page);
   check('macro name is escaped in tile and slot', (await page.locator('#board b').count()) === 0 && (await slotText(page, '0')) === '<b>x"y</b>');
 
+  // ── Task 8: settings window ───────────────────────────────────────────────
+  await page.click('#board [data-act="setopen"]');
+  await settle(page);
+  check('gear opens the settings window', (await page.locator('#board .setw').count()) === 1);
+  const tabs = await page.locator('#board .stabs [data-stab]').allTextContents();
+  check('four tabs 一般/搖桿/觸控板/按鍵', JSON.stringify(tabs.map(t => t.trim())) === '["一般","搖桿","觸控板","按鍵"]', tabs.join('|'));
+  check('一般 shows the config path and both open buttons', /dualsense-mapper\.json/.test(await page.locator('#board .cfgp').textContent()) &&
+    (await page.locator('#board [data-act="opencfg"]').count()) === 1 && (await page.locator('#board [data-act="opendir"]').count()) === 1);
+  await page.click('#board [data-act="opencfg"]');
+  await page.click('#board [data-act="opendir"]');
+  await settle(page);
+  check('用記事本開啟 / 開啟所在資料夾 invoke their commands', (await countCalls(page, 'open_config_in_editor')) === 1 && (await countCalls(page, 'open_config_folder')) === 1);
+  for (let i = 0; i < 8; i++) {
+    await page.evaluate(i => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'k' + i, action: i % 2 ? 'up' : 'down' }), i);
+  }
+  await settle(page);
+  const rows = await page.locator('#board #logrows .lr').allTextContents();
+  check('最近的事件: at most 6 rows, newest first', rows.length === 6 && /k7/.test(rows[0]) && /放開/.test(rows[0]), rows.slice(0, 2).join(' | '));
+  for (const t of ['stick', 'tp', 'timing', 'gen']) {
+    await page.click(`#board [data-stab="${t}"]`);
+    await settle(page);
+  }
+  check('every tab switches its pane', (await page.locator('#board [data-stab="gen"][aria-pressed="true"]').count()) === 1);
+  await page.click('#board [data-stab="timing"]');
+  await page.locator('#board [data-f="press0"]').fill('25');
+  await page.locator('#board [data-f="press0"]').dispatchEvent('input');
+  await page.locator('#board [data-f="press1"]').fill('25');
+  await page.locator('#board [data-f="press1"]').dispatchEvent('input');
+  await page.click('#board [data-stab="gen"]');
+  const nSettings = await countCalls(page, 'set_settings');
+  await page.click('#board [data-act="setsave"]');
+  await settle(page);
+  check('invalid 按住維持下限 is refused: message, outline, its tab', (await countCalls(page, 'set_settings')) === nSettings &&
+    /按住維持下限/.test(await page.locator('#board .setw .err').textContent()) &&
+    (await page.locator('#board [data-f="press0"][aria-invalid="true"]').count()) === 1 &&
+    (await page.locator('#board [data-stab="timing"][aria-pressed="true"]').count()) === 1);
+  await page.locator('#board [data-f="press1"]').fill('30');
+  await page.locator('#board [data-f="press1"]').dispatchEvent('input');
+  await page.click('#board [data-stab="stick"]');
+  await page.locator('#board [data-f="deadzone"]').fill('0.6');
+  await page.locator('#board [data-f="deadzone"]').dispatchEvent('input');
+  await page.click('#board [data-act="setsave"]');
+  await settle(page);
+  const ss = await lastCall(page, 'set_settings');
+  check('儲存 sends set_settings with the edits', Math.abs(ss?.args?.settings?.deadzone - 0.6) < 1e-6 &&
+    JSON.stringify(ss.args.settings.min_press_ms) === '[25,30]' && (await page.locator('#board .setw').count()) === 0, JSON.stringify(ss?.args?.settings));
+  await page.click('#board [data-act="setopen"]');
+  await settle(page);
+  await page.click('#board [data-stab="stick"]');
+  await page.locator('#board [data-f="deadzone"]').fill('0.2');
+  await page.locator('#board [data-f="deadzone"]').dispatchEvent('input');
+  const nS2 = await countCalls(page, 'set_settings');
+  await page.keyboard.press('Escape');
+  await settle(page);
+  check('Esc closes without saving', (await page.locator('#board .setw').count()) === 0 && (await countCalls(page, 'set_settings')) === nS2);
+  await page.click('#board [data-act="setopen"]');
+  await settle(page);
+  await page.click('#board [data-stab="tp"]');
+  await page.evaluate(() => window.__mockEmit('touchpad-click', { raw_x: 1200, raw_y: 300, quadrant: 26 }));
+  await settle(page);
+  check('touchpad dot follows the finger', (await page.locator('#board .tpad circle').count()) === 1);
+  await page.click('#board [data-act="tpmid"]');
+  await settle(page);
+  check('中心設在手指位置 copies the finger position', (await page.locator('#board [data-f="midX"]').inputValue()) === '1200' &&
+    (await page.locator('#board [data-f="midY"]').inputValue()) === '300');
+  await page.click('#board .setw .x');
+  await settle(page);
+  check('✕ closes the window', (await page.locator('#board .setw').count()) === 0);
+
   // @@NEXT-TASKS
 
   const inPageErrors = await page.evaluate(() => window.__mockErrors);
