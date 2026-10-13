@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
-  "productName": "DualSense Mapper",
+  "productName": "PadToKBM",
   "version": "3.0.0",
   "identifier": "com.luotee.dualsense-mapper",
   "build": {
@@ -9,7 +9,7 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [{
-      "title": "DualSense Mapper",
+      "title": "PadToKBM",
       "width": 980,
       "height": 640,
       "minWidth": 880,

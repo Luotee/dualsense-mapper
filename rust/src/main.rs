@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "dualsense-mapper", version, about)]
+#[command(name = "PadToKBM", version, about)]
 struct Cli {
     /// Path to config.json. Defaults to <exe_dir>/padtokbm.json.
     #[arg(long)]
@@ -119,7 +119,7 @@ fn show_fatal_dialog(msg: &str) {
     use std::iter::once;
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
     let body: Vec<u16> = msg.encode_utf16().chain(once(0)).collect();
-    let title: Vec<u16> = "DualSense Mapper — Error"
+    let title: Vec<u16> = "PadToKBM — Error"
         .encode_utf16()
         .chain(once(0))
         .collect();
@@ -220,7 +220,7 @@ fn real_main(cli: &Cli) -> Result<()> {
 
 fn print_banner(cfg_path: &std::path::Path, dry_run: bool, just_wrote_default: bool) {
     println!("=================================================");
-    println!(" DualSense Mapper v{}", env!("CARGO_PKG_VERSION"));
+    println!(" PadToKBM v{}", env!("CARGO_PKG_VERSION"));
     println!(" Config: {}", cfg_path.display());
     if dry_run {
         println!(" Mode:   DRY-RUN (no real keystrokes sent)");
