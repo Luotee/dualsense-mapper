@@ -518,6 +518,18 @@ try {
     /至少一步/.test((await page.locator('#board .med .merr').textContent()) || ''));
   await page.click('#board .med [data-act="mdel"]');
   await settle(page);
+  await page.evaluate(() => {
+    window.__mock.config.macros['macro_attack_combo'] = { loop: false, steps: [{ key: 'z', action: 'down', delay_ms: [40, 60] }, { key: 'z', action: 'up', delay_ms: [15, 25] }] };
+    window.__mockEmit('config-changed', { source: 'watcher' });
+  });
+  await settle(page);
+  const nRename = await countCalls(page, 'rename_macro');
+  await page.locator('#board [data-medit="macro_attack_combo"]').click();
+  await settle(page);
+  await page.click('#board .med [data-act="mdone"]');
+  await settle(page);
+  check('完成 on an untouched long-named macro does not rename it', (await countCalls(page, 'rename_macro')) === nRename &&
+    (await lastCall(page, 'set_macro'))?.args?.name === 'macro_attack_combo', JSON.stringify((await lastCall(page, 'set_macro'))?.args?.name));
   check('macro name is escaped in tile and slot', (await page.locator('#board b').count()) === 0 && (await slotText(page, '0')) === '<b>x"y</b>');
 
   // ── Task 8: settings window ───────────────────────────────────────────────

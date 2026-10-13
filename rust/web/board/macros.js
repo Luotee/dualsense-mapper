@@ -83,7 +83,10 @@ async function done() {
   const m = state.medit;
   const bad = m.steps.findIndex(s => badRange(s.d, true));
   if (bad >= 0) { state.mpop = bad; rerender(); return; }
-  const name = (m.name.trim() || m.origName).slice(0, NAME_MAX);
+  // The 8-character limit applies to names typed here; an existing longer
+  // name (hand-edited config) is kept as it is unless the user changed it.
+  let name = m.name.trim() || m.origName;
+  if (name !== m.origName) name = name.slice(0, NAME_MAX);
   if (m.loop && !m.steps.length) { m.err = '按住時重複需要至少一步'; rerender(); return; }
   try {
     if (name !== m.origName) {
