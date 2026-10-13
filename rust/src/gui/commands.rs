@@ -79,7 +79,12 @@ pub fn set_binding_impl(
     entry: ButtonEntry,
 ) -> anyhow::Result<()> {
     let mut doc = ConfigDoc::load(config_path)?;
-    doc.replace_button(id, entry.clone());
+    doc.replace_binding(
+        crate::gamepad::ControllerKind::DualSense,
+        crate::pad_bindings::Page::Base,
+        id,
+        entry.clone(),
+    );
     doc.validate()?;
     write_atomic(config_path, &doc)?;
     engine

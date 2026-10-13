@@ -113,3 +113,113 @@ fn set_mapping_enabled_preserves_help() {
     assert_eq!(raw["mapping_enabled"]["dualsense"], false);
     assert_eq!(raw["_help"], orig["_help"]);
 }
+
+// ─── Per-pad / per-page writes (config version 2) ────────────────────────────
+
+use dualsense_mapper::config::{Binding, ButtonEntry, Config};
+use dualsense_mapper::gamepad::ControllerKind;
+use dualsense_mapper::pad_bindings::{Page, Side, TriggerMode};
+
+fn example_copy() -> (tempfile::TempDir, std::path::PathBuf) {
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.json");
+    std::fs::copy(&example, &path).unwrap();
+    (dir, path)
+}
+
+fn key(k: &str) -> ButtonEntry {
+    ButtonEntry { label: "slot".into(), binding: Binding::Key(k.into()) }
+}
+
+#[test]
+fn loading_v1_and_writing_saves_version_2_pads() {
+    let maple = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/maple_artale.json");
+    let orig: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&maple).unwrap()).unwrap();
+    assert_eq!(orig["version"], 1, "fixture is a v1 file");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.json");
+    std::fs::copy(&maple, &path).unwrap();
+
+    let doc = ConfigDoc::load(&path).unwrap();
+    write_atomic(&path, &doc).unwrap();
+
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(v["version"], 2);
+    assert!(v.get("buttons").is_none(), "old top-level buttons dropped");
+    assert_eq!(v["pads"]["ns2_pro"]["trigger_mode"]["l"], "key");
+    assert_eq!(v["pads"]["dualsense"]["buttons"]["0"], orig["buttons"]["0"]);
+    assert_eq!(v["pads"]["ns_pro"]["buttons"]["32"]["type"], "unbound", "added ids filled in raw");
+    assert_eq!(v["_help"], orig["_help"]);
+    // And the saved file loads as a plain v2 file.
+    Config::load_from_path(&path).unwrap();
+}
+
+#[test]
+fn replace_binding_on_quick_page_round_trips() {
+    let (_d, path) = example_copy();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.replace_binding(ControllerKind::DualSense, Page::QuickL, 11, key("F1"));
+    write_atomic(&path, &doc).unwrap();
+    let cfg = Config::load_from_path(&path).unwrap();
+    assert_eq!(cfg.pad(ControllerKind::DualSense).quick_l["11"].binding, Binding::Key("F1".into()));
+    assert!(!cfg.pad(ControllerKind::NsPro).quick_l.contains_key("11"));
+    assert_eq!(doc.typed().pad(ControllerKind::DualSense).quick_l["11"].binding, Binding::Key("F1".into()));
+}
+
+#[test]
+fn replace_binding_on_base_touches_one_pad() {
+    let (_d, path) = example_copy();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.replace_binding(ControllerKind::Ns2Pro, Page::Base, 0, key("z"));
+    write_atomic(&path, &doc).unwrap();
+    let cfg = Config::load_from_path(&path).unwrap();
+    assert_eq!(cfg.pad(ControllerKind::Ns2Pro).buttons["0"].binding, Binding::Key("z".into()));
+    assert_eq!(cfg.pad(ControllerKind::DualSense).buttons["0"].binding, Binding::Unbound);
+}
+
+#[test]
+fn unbound_on_quick_page_removes_the_key() {
+    let (_d, path) = example_copy();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.replace_binding(ControllerKind::DualSense, Page::QuickL, 11, key("F1"));
+    write_atomic(&path, &doc).unwrap();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.replace_binding(
+        ControllerKind::DualSense,
+        Page::QuickL,
+        11,
+        ButtonEntry { label: "slot".into(), binding: Binding::Unbound },
+    );
+    assert!(!doc.typed().pad(ControllerKind::DualSense).quick_l.contains_key("11"));
+    write_atomic(&path, &doc).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(v["pads"]["dualsense"]["quick_l"].get("11").is_none());
+    let cfg = Config::load_from_path(&path).unwrap();
+    assert!(!cfg.pad(ControllerKind::DualSense).quick_l.contains_key("11"));
+}
+
+#[test]
+fn set_trigger_mode_round_trips() {
+    let (_d, path) = example_copy();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.set_trigger_mode(ControllerKind::NsPro, Side::R, TriggerMode::Key);
+    write_atomic(&path, &doc).unwrap();
+    let cfg = Config::load_from_path(&path).unwrap();
+    assert_eq!(cfg.pad(ControllerKind::NsPro).trigger_mode.r, TriggerMode::Key);
+    assert_eq!(cfg.pad(ControllerKind::NsPro).trigger_mode.l, TriggerMode::Page);
+    assert_eq!(cfg.pad(ControllerKind::DualSense).trigger_mode.r, TriggerMode::Page);
+}
+
+#[test]
+fn replace_pad_round_trips() {
+    let (_d, path) = example_copy();
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    let mut pad = doc.typed().pad(ControllerKind::NsPro).cleared();
+    pad.quick_r.insert("3".into(), key("F9"));
+    doc.replace_pad(ControllerKind::NsPro, pad.clone());
+    write_atomic(&path, &doc).unwrap();
+    let cfg = Config::load_from_path(&path).unwrap();
+    assert_eq!(cfg.pad(ControllerKind::NsPro), &pad);
+}

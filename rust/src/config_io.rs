@@ -6,7 +6,7 @@
 
 use crate::config::{migrate_v1, Binding, ButtonEntry, Config, MacroDef, ADDED_IDS};
 use crate::gamepad::ControllerKind;
-use crate::pad_bindings::PadBindings;
+use crate::pad_bindings::{PadBindings, Page, Side, TriggerMode};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -137,11 +137,28 @@ impl ConfigDoc {
         self.raw["tick_jitter_ms"] = serde_json::json!([v[0], v[1]]);
     }
 
-    pub fn replace_button(&mut self, id: u32, entry: ButtonEntry) {
+    /// Set one binding in one table of one pad. On a quick page an
+    /// `Unbound` entry removes the id instead of storing it (a missing page
+    /// id already sends nothing).
+    pub fn replace_binding(&mut self, kind: ControllerKind, page: Page, id: u32, entry: ButtonEntry) {
         let k = id.to_string();
-        let slug = ControllerKind::DualSense.slug();
-        self.raw["pads"][slug]["buttons"][&k] = serde_json::to_value(&entry).unwrap();
-        self.typed.pad_mut(ControllerKind::DualSense).buttons.insert(k, entry);
+        let slug = kind.slug();
+        let field = page_field(page);
+        if page != Page::Base && entry.binding == Binding::Unbound {
+            if let Some(obj) = self.raw["pads"][slug][field].as_object_mut() {
+                obj.remove(&k);
+            }
+            self.typed.pad_mut(kind).table_mut(page).remove(&k);
+            return;
+        }
+        self.raw["pads"][slug][field][&k] = serde_json::to_value(&entry).unwrap();
+        self.typed.pad_mut(kind).table_mut(page).insert(k, entry);
+    }
+
+    pub fn set_trigger_mode(&mut self, kind: ControllerKind, side: Side, mode: TriggerMode) {
+        self.typed.pad_mut(kind).trigger_mode.set(side, mode);
+        let modes = self.typed.pad(kind).trigger_mode;
+        self.raw["pads"][kind.slug()]["trigger_mode"] = serde_json::to_value(modes).unwrap();
     }
 
     /// Replace one pad's whole table.
@@ -205,6 +222,15 @@ fn migrate_touchpad_ids(typed: &mut Config, raw: &mut Value) {
     }
     if raw["touchpad_midpoint_y"].is_null() {
         raw["touchpad_midpoint_y"] = Value::from(typed.touchpad_midpoint_y);
+    }
+}
+
+/// The JSON field holding `page` inside a pad.
+fn page_field(page: Page) -> &'static str {
+    match page {
+        Page::Base => "buttons",
+        Page::QuickL => "quick_l",
+        Page::QuickR => "quick_r",
     }
 }
 
