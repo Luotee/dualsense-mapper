@@ -6,12 +6,14 @@ Every non-ASCII, non-whitespace character in the shipped web text
 rust/web/fonts/cubic11.woff2. The characters the font lacks and the UI
 draws as SVG (✕ ◀ ▶ ↖ ↗ ↙ ↘) must not appear in that text at all.
 
-Needs fontTools + brotli: run with $DSM_FONT_PY or
-~/.cache/dualsense-mapper-tools/venv/bin/python. Exit 0 = ok, 1 = missing.
+Needs fontTools + brotli: an interpreter that has them is used as is, any other
+re-runs this in the pinned venv (scripts/font_tools.py). Exit 0 = ok, 1 = missing.
 """
 import pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+import font_tools  # noqa: E402
 WEB = ROOT / "rust" / "web"
 FONT = WEB / "fonts" / "cubic11.woff2"
 SVG_ONLY = "✕◀▶↖↗↙↘"
@@ -52,4 +54,5 @@ def main():
 
 
 if __name__ == "__main__":
+    font_tools.reexec_in_venv(pinned=False)
     sys.exit(main())

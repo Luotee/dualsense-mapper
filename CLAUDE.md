@@ -165,8 +165,11 @@ What a PASS requires, captured as evidence:
   harmless miss.)
 - Pure modules pass `node --test rust/web/tests/*.test.mjs`.
 - Every glyph of shipped web text is in the bundled Cubic 11 subset
-  (`scripts/verify/font-coverage.py`; re-run `scripts/build-font.py`
-  after adding UI text).
+  (`scripts/verify/font-coverage.py`; re-run `python3 scripts/build-font.py`
+  after adding UI text). The font tooling is pinned in the repo
+  (`scripts/tools/requirements.txt`, Cubic 11 tag + sha256 in
+  `scripts/font_tools.py`) and fetched on first use into
+  `${XDG_CACHE_HOME:-~/.cache}/pad-to-kbm-tools/`; nothing to install by hand.
 - Screenshot `rust/target/verify/web-main.png`; README pictures come from
   `scripts/readme-shots.mjs`.
 
