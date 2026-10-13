@@ -486,9 +486,19 @@ layer_web() {
         return
     fi
 
-    # Glyph coverage of the bundled Cubic 11 subset (spec 4.4 / 5.6).
-    local font_py="${DSM_FONT_PY:-$HOME/.cache/dualsense-mapper-tools/venv/bin/python}" font
-    if [ -x "$font_py" ] && "$font_py" -c 'import fontTools, brotli' 2>/dev/null; then
+    # Font tooling unit tests (scripts/font_tools.py: pinned venv + font fetch).
+    echo "=== python3 -m unittest scripts/tests/test_font_tools.py" >>"$log"
+    if ! python3 -m unittest "$REPO_ROOT/scripts/tests/test_font_tools.py" >>"$log" 2>&1; then
+        record web FAIL "font_tools unit tests — see log"
+        return
+    fi
+
+    # Glyph coverage of the bundled Cubic 11 subset (spec 4.4 / 5.6). The pinned
+    # venv is fetched on first use; $DSM_FONT_PY overrides it.
+    local font_py font
+    echo "=== font tooling (scripts/font_tools.py python)" >>"$log"
+    font_py="${DSM_FONT_PY:-$(python3 "$REPO_ROOT/scripts/font_tools.py" python 2>>"$log")}"
+    if [ -n "$font_py" ] && [ -x "$font_py" ] && "$font_py" -c 'import fontTools, brotli' 2>/dev/null; then
         echo "=== font-coverage ($font_py)" >>"$log"
         if "$font_py" "$REPO_ROOT/scripts/verify/font-coverage.py" >>"$log" 2>&1; then
             font="font ok"
@@ -497,7 +507,7 @@ layer_web() {
             return
         fi
     else
-        font="font SKIP (no fontTools: set DSM_FONT_PY)"
+        font="font SKIP (could not set up the pinned venv, offline? — see log)"
     fi
     record web PASS "units ${units}; ${summary:-ok}; ${font}"
 }

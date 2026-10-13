@@ -1,36 +1,36 @@
 #!/usr/bin/env python3
 """Subset Cubic 11 (OFL) to the characters of the shipped web UI.
 
-Writes rust/web/fonts/cubic11.woff2 from
-~/.cache/dualsense-mapper-tools/fonts/Cubic_11.ttf, keeping every character
+Writes rust/web/fonts/cubic11.woff2 from the pinned Cubic 11 source
+(scripts/font_tools.py fetches and checks it), keeping every character
 found in rust/web/**/*.html|js|css (tests excluded) plus printable ASCII.
 Same subset options as the mockup's tools/embed_fonts.py. Glyphs typed
 later (macro names) that are not in the subset fall back to the system font.
 
-Run with fontTools + brotli available ($DSM_FONT_PY or
-~/.cache/dualsense-mapper-tools/venv/bin/python). Re-run after adding UI text;
+Run `python3 scripts/build-font.py`; it re-runs itself in the pinned venv
+(scripts/font_tools.py). Re-run after adding UI text;
 scripts/verify/font-coverage.py fails until you do.
 """
-import os, pathlib, sys
+import pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = ROOT / "rust" / "web"
 OUT = WEB / "fonts" / "cubic11.woff2"
-SRC = pathlib.Path(os.path.expanduser("~/.cache/dualsense-mapper-tools/fonts/Cubic_11.ttf"))
+sys.path.insert(0, str(ROOT / "scripts"))
+import font_tools  # noqa: E402
 
 
 def main():
     from fontTools import subset
     from fontTools.ttLib import TTFont
-    if not SRC.exists():
-        print(f"missing source font {SRC}")
-        return 1
+    SRC = font_tools.ensure_font()
     chars = set(chr(c) for c in range(0x20, 0x7F))
     for p in WEB.rglob("*"):
         if p.suffix in (".html", ".js", ".css") and "tests" not in p.relative_to(WEB).parts:
             chars |= set(p.read_text(encoding="utf-8"))
     text = "".join(sorted(c for c in chars if not c.isspace() or c == " "))
-    font = TTFont(SRC)
+    # Keep the source head.modified: a rebuild of the same text is byte-identical.
+    font = TTFont(SRC, recalcTimestamp=False)
     opts = subset.Options()
     opts.flavor = "woff2"
     opts.layout_features = ["*"]
@@ -45,4 +45,5 @@ def main():
 
 
 if __name__ == "__main__":
+    font_tools.reexec_in_venv()
     sys.exit(main())

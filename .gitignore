@@ -21,4 +21,4 @@ memory/
 dist/
 
 # Python script caches
-scripts/__pycache__/
+__pycache__/
