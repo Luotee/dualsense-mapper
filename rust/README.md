@@ -1,6 +1,6 @@
-# DualSense Mapper (Rust)
+# PadToKBM (Rust)
 
-PS5 DualSense → keyboard mapper. Single executable, JSON config, supports macros with randomized delays.
+Gamepad → keyboard and mouse mapper (formerly DualSense Mapper). Single executable, JSON config, supports macros with randomized delays.
 
 ## Status
 
@@ -14,16 +14,16 @@ v2.0.0 dropped the gilrs path and reads the DualSense BT 0x31 report directly vi
 
 ## Quick start (Windows, double-click)
 
-1. Download `dualsense-mapper.exe` from the [latest release](https://github.com/Luotee/dualsense-mapper/releases) into a folder you can write to (e.g. `C:\Users\<you>\Downloads\dualsense-mapper\`).
+1. Download `PadToKBM.exe` from the [latest release](https://github.com/Luotee/pad-to-kbm/releases) into a folder you can write to (e.g. `C:\Users\<you>\Downloads\PadToKBM\`).
 2. Pair DualSense over Bluetooth (PS-button-hold + Share-button-hold until the bar flashes, then add from Windows Bluetooth settings).
-3. Double-click `dualsense-mapper.exe`. The console window opens with a startup banner. On first run it also writes `dualsense-mapper.json` next to the exe — that file has an inline keyboard cheat sheet at the top.
+3. Double-click `PadToKBM.exe`. The console window opens with a startup banner. On first run it also writes `padtokbm.json` next to the exe (an older `dualsense-mapper.json` there is renamed to it, with a `.bak` copy kept) — that file has an inline keyboard cheat sheet at the top.
 4. Press gamepad buttons; the mapped keys are sent to the focused application.
-5. To customize: open `dualsense-mapper.json` in Notepad, change the `value` field of any binding to a key name from the cheat sheet, save, restart the exe.
+5. To customize: open `padtokbm.json` in Notepad, change the `value` field of any binding to a key name from the cheat sheet, save, restart the exe.
 6. To quit: press **Ctrl-C** inside the console window, or just close the window.
 
 Every held key is released on exit, on panic, and on controller disconnect, so nothing gets stuck.
 
-The folder is portable: copy `dualsense-mapper.exe` + `dualsense-mapper.json` to a USB stick, plug it into another Windows machine, run from there.
+The folder is portable: copy `PadToKBM.exe` + `padtokbm.json` to a USB stick, plug it into another Windows machine, run from there.
 
 If anything goes wrong, the program shows the error and waits for you to press Enter — the console will not flash and disappear.
 
@@ -87,7 +87,7 @@ cd rust
 cargo build --release
 ```
 
-Binary lands at `target/release/dualsense-mapper.exe`. Strip + LTO are enabled in release; expect ~3–5 MB.
+Binary lands at `target/release/PadToKBM.exe`. Strip + LTO are enabled in release; expect ~3–5 MB.
 
 ## Tests
 

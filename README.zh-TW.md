@@ -1,8 +1,8 @@
-# DualSense Mapper
+# PadToKBM 手把轉鍵鼠
 
 [English](README.md) | **繁體中文**
 
-把 PS5 DualSense 控制器映射成鍵盤按鍵，讓筆電也能用手把玩。2025 年 5 月最初用 Python 寫成，為了讓我太太在 MacBook 上舒服地玩Maplestory Worlds Artale；後來用 Rust 重寫，打包成單一個 Windows 執行檔。
+PadToKBM（舊名 DualSense Mapper）把手把（DualSense、Switch Pro、Switch 2 Pro）轉成鍵盤和滑鼠操作，讓筆電也能用手把玩。2025 年 5 月最初用 Python 寫成，為了讓我太太在 MacBook 上舒服地玩Maplestory Worlds Artale；後來用 Rust 重寫，打包成單一個 Windows 執行檔。
 
 <p align="center">
   <img src="docs/images/readme/board.png" width="820"
@@ -48,7 +48,7 @@
 
 ## 怎麼取得
 
-到 [latest release](https://github.com/Luotee/dualsense-mapper/releases) 下載 `dualsense-mapper.exe`，用藍牙配對手把，然後雙擊執行檔。完整步驟與按鈕對照表見 [`rust/README.md`](rust/README.md)（英文）。
+到 [latest release](https://github.com/Luotee/pad-to-kbm/releases) 下載 `PadToKBM.exe`，用藍牙配對手把，然後雙擊執行檔。完整步驟與按鈕對照表見 [`rust/README.md`](rust/README.md)（英文）。
 
 ## 兩套實作
 
@@ -64,7 +64,7 @@
 - **DualSense PS5 控制器**（`054c:0ce6`），走 **Bluetooth**。
 - **Nintendo Switch Pro 控制器**（`057e:2009`），走 **Bluetooth**——請先在 Windows 的藍牙設定裡完成配對。
 - **Nintendo Switch 2 Pro 控制器**，走 **Bluetooth LE**——第一次連線請按住小小的 SYNC 鍵；之後按任何鍵即可重新連線。**不要**在 Windows 藍牙設定裡配對（會斷線）。不映射模式（此手把的預設）需要安裝 [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)，遊戲會把它當成 Xbox 手把。建議使用 Windows 11（Windows 10 會被限制在約 17 Hz）。Switch 2 Pro 預設為不映射模式，因此按鍵綁定（含 GL/GR/C，id 30/31/32）要把 `mapping_enabled.ns2_pro` 設為 true 才會生效。`vigem_missing` 與 `ble_rate_limited_win10` 警告目前只出現在 controller-status 的 payload 與 log 裡，GUI 還不會顯示（隨 UX 改版加入）。若遊戲在不映射模式（預設）下收不到 Switch 2 Pro 的輸入，請安裝 [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)，或把 `mapping_enabled.ns2_pro` 改成 true。
-- **連線震動**——app 開始使用某支手把時，它會短震一下。在 `dualsense-mapper.json` 把 `rumble_on_connect` 設為 false 即可關閉。
+- **連線震動**——app 開始使用某支手把時，它會短震一下。在 `padtokbm.json` 把 `rumble_on_connect` 設為 false 即可關閉。
 
 目前還不支援：
 

@@ -1,8 +1,8 @@
-# DualSense Mapper
+# PadToKBM
 
 **English** | [繁體中文](README.zh-TW.md)
 
-Map a PS5 DualSense controller to keyboard keys for use on a laptop. Originally written in Python in May 2025 to let my wife play MapleStory Worlds Artale comfortably on a MacBook; rewritten in Rust to ship as a single Windows executable.
+PadToKBM (formerly DualSense Mapper) maps a gamepad (DualSense, Switch Pro or Switch 2 Pro) to keyboard and mouse for use on a laptop. Originally written in Python in May 2025 to let my wife play MapleStory Worlds Artale comfortably on a MacBook; rewritten in Rust to ship as a single Windows executable.
 
 <p align="center">
   <img src="docs/images/readme/board.png" width="820"
@@ -48,7 +48,7 @@ Map a PS5 DualSense controller to keyboard keys for use on a laptop. Originally 
 
 ## Get it
 
-Download `dualsense-mapper.exe` from the [latest release](https://github.com/Luotee/dualsense-mapper/releases), pair the pad over Bluetooth, then double-click the exe. Full walkthrough and button reference: [`rust/README.md`](rust/README.md).
+Download `PadToKBM.exe` from the [latest release](https://github.com/Luotee/pad-to-kbm/releases), pair the pad over Bluetooth, then double-click the exe. Full walkthrough and button reference: [`rust/README.md`](rust/README.md).
 
 ## Implementations
 
@@ -64,7 +64,7 @@ The Rust build is the recommended path. Python is kept for blame history and bec
 - **DualSense PS5 controller** (`054c:0ce6`) over **Bluetooth**.
 - **Nintendo Switch Pro Controller** (`057e:2009`) over **Bluetooth** — pair it in Windows Bluetooth settings first.
 - **Nintendo Switch 2 Pro Controller** over **Bluetooth LE** — the first time, hold the small SYNC button; afterwards any button reconnects. Do **not** pair it in Windows Bluetooth settings (it disconnects). In no-mapping mode (the default for this pad) it needs [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0) and shows up to games as an Xbox controller. Windows 11 is recommended (Windows 10 limits it to ~17 Hz). The Switch 2 Pro defaults to no-mapping mode, so key bindings (including GL/GR/C, ids 30/31/32) apply only after you set `mapping_enabled.ns2_pro` to true. The `vigem_missing` and `ble_rate_limited_win10` warnings are currently reported only in the controller-status payload and the log; the GUI does not display them yet (coming with the UX redesign). If a game gets no input from the Switch 2 Pro in no-mapping mode (the default), install [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0) or switch `mapping_enabled.ns2_pro` to true.
-- **Rumble on connect** — the controller the app starts using gives one short buzz. Set `rumble_on_connect` to false in `dualsense-mapper.json` to turn it off.
+- **Rumble on connect** — the controller the app starts using gives one short buzz. Set `rumble_on_connect` to false in `padtokbm.json` to turn it off.
 
 Not supported yet:
 
