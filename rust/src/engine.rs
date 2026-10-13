@@ -456,14 +456,19 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         if paused && !last_paused {
             // Drain all macros and held keys when pausing.
             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            // No events are polled while paused, so their releases are lost.
+            mapper.reset_input_state();
         }
         last_paused = paused;
 
-        // ── Config change: rebuild mapper ────────────────────────────────────
+        // ── Config change: swap the mapper's config ──────────────────────────
+        // `replace_config`, not a new Mapper: held bindings and trigger
+        // state survive, so a key held across a rebind still releases the
+        // key it pressed (iron rule 2).
         let current_gen = h.config_generation.load(Ordering::SeqCst);
         if current_gen != last_config_gen {
             let cfg = h.config.read().unwrap();
-            mapper = Mapper::new(cfg.clone());
+            mapper.replace_config(cfg.clone());
             last_config_gen = current_gen;
         }
 
@@ -471,6 +476,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         let now_on = mapping_enabled(&h, current_kind);
         if mapping_on && !now_on {
             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            mapper.reset_input_state();
             // An OFF edge may retry a plug that failed earlier this session.
             pad.rearm();
         }
@@ -501,9 +507,12 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                     crate::gamepad::GamepadEvent::Connected(kind) => {
                         let kind = *kind;
                         current_kind = Some(kind);
+                        // From now on presses use this pad's table.
+                        mapper.set_pad(Some(kind));
                         let now_on = mapping_enabled(&h, current_kind);
                         if mapping_on && !now_on {
                             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+                            mapper.reset_input_state();
                         }
                         mapping_on = now_on;
                         // A fresh session: neutral pad state, one plug attempt.
@@ -546,6 +555,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                         // next session's first frame reports every axis, and a
                         // stale `virt_active` would swallow that press.
                         mapper = Mapper::new(mapper.config().clone());
+                        mapper.set_pad(None);
                     }
                     _ => {}
                 }
