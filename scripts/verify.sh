@@ -255,9 +255,13 @@ gui_check_config() {
     python3 - "$1" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
-missing = [k for k in ("_help", "buttons", "mapping_enabled") if k not in doc]
+missing = [k for k in ("_help", "pads", "mapping_enabled") if k not in doc]
+missing += ["pads." + p for p in ("dualsense", "ns_pro", "ns2_pro") if p not in doc.get("pads", {})]
 if missing:
     print("missing keys: " + ", ".join(missing))
+    sys.exit(1)
+if doc.get("version") != 2:
+    print("config version %r, expected 2" % doc.get("version"))
     sys.exit(1)
 PY
 }
