@@ -1,6 +1,7 @@
 import { invoke, listen } from './ipc.js';
 import * as controller from './controller.js';
 import * as bindPopup from './bind_popup.js';
+import * as padView from './pad_view.js';
 
 let config = null;
 let svgEl  = null;
@@ -14,12 +15,16 @@ export async function init() {
   hookLiveHighlight();
   listenConfigChanged();
   renderChipList();
+  padView.onPadChange(async () => {
+    await reload();
+    renderChipList();
+  });
 
   const btn = document.getElementById('btn-disconnect');
   if (btn) {
     btn.addEventListener('click', async () => {
       try {
-        await invoke('disconnect_gamepad');
+        await invoke('disconnect_gamepad', { pad: null });
       } catch (e) {
         console.error('disconnect_gamepad failed:', e);
       }
@@ -30,11 +35,16 @@ export async function init() {
 async function reload() {
   config = await invoke('get_config');
   const bindings = {};
-  for (const [id, entry] of Object.entries(config.buttons)) {
+  for (const [id, entry] of Object.entries(buttons())) {
     bindings[id] = { kind: kindOf(entry), value: valueOf(entry) };
   }
   controller.render(document.getElementById('controller-host'), bindings);
   svgEl = document.querySelector('#controller-host svg.controller');
+}
+
+// The base table of the pad these screens show (pad_view.js).
+function buttons() {
+  return padView.baseButtons(config, padView.currentPad());
 }
 
 // ButtonEntry serialises flattened (rust/src/config.rs ButtonEntry has
@@ -60,10 +70,11 @@ function hookClick() {
 }
 
 function openPopup(id) {
-  const entry = config.buttons[String(id)];
+  const entry = buttons()[String(id)];
   if (!entry) return;
   controller.selectButton(svgEl, id);
   bindPopup.open({
+    pad: padView.currentPad(),
     id,
     label: entry.label,
     currentEntry: entry,
@@ -117,7 +128,7 @@ function renderChipList() {
   if (!host) return;
   host.innerHTML = '';
   for (let id = 0; id <= 32; id++) {
-    const entry = config.buttons[String(id)];
+    const entry = buttons()[String(id)];
     if (!entry) continue;
     const row = document.createElement('div');
     row.className = 'chip-row';

@@ -3,6 +3,7 @@ import { normaliseKeyEvent } from './key_capture.js';
 import { setCaptureActive } from './capture_state.js';
 
 // Open a modal popup to edit one button binding. `options`:
+//   pad       : 'dualsense'|'ns_pro'|'ns2_pro' — whose base table (pad_view.js)
 //   id        : number
 //   label     : string (button display label)
 //   currentEntry : ButtonEntry as returned by `get_config` — flattened JSON:
@@ -201,7 +202,9 @@ export function open(options) {
     }
 
     try {
-      await invoke('set_binding', { id: options.id, entry: entryOut });
+      await invoke('set_binding', {
+        pad: options.pad ?? 'dualsense', page: 'base', id: options.id, entry: entryOut,
+      });
     } catch (e) {
       show(`Save failed: ${e}`);
       return;

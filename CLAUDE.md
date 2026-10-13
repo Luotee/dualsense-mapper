@@ -202,14 +202,18 @@ layer into SKIP with a hint (missing cargo FAILs `linux`).
 These are project-specific invariants. Breaking any of them silently
 regresses real, observed bugs the codebase already fixed once:
 
-1. **`config.rs::Config::validate` must reject any config that does not
-   list every button id `0..=32` (the union of all supported pads' ids).**
-   Missing ids are a user error, not a silent skip — except for the
-   v2.1.0 touchpad-quadrant additions and the v2.5.0 Capture button
-   and the v2.6.0 Switch 2 Pro additions (25..=32), which the load path auto-fills as `Unbound` so older
-   configs continue to parse. The validator itself still requires the
-   full range to be present; auto-fill happens before validation, not
-   inside it.
+1. **`config.rs::Config::validate` must reject any config in which a
+   pad's `buttons` table (`pads.dualsense`, `pads.ns_pro`, `pads.ns2_pro`)
+   does not list every button id `0..=32` (the union of all supported
+   pads' ids).** Missing ids are a user error, not a silent skip — except
+   for the v2.1.0 touchpad-quadrant additions and the v2.5.0 Capture
+   button and the v2.6.0 Switch 2 Pro additions (25..=32), which the load
+   path auto-fills as `Unbound` so older configs continue to parse, and a
+   pad with no table at all, which the load path fills with the default
+   table. A version-1 file (one top-level `buttons`) is migrated into
+   every pad first (`config::migrate_v1`). The validator itself still
+   requires the full range on every pad; auto-fill happens before
+   validation, not inside it.
 2. **`safety.rs` is the single source of truth for "what keys (and
    mouse buttons) are physically pressed right now."** `keyboard.rs`
    always asks `KeyState::press` / `release` for the edge transition

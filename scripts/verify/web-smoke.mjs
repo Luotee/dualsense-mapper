@@ -95,6 +95,7 @@ function tauriMock({ config, version }) {
     prefs: { drawer_open: false, last_tab: null },
   };
   window.__mockCalls = [];
+  window.__mockCallArgs = [];
   window.__mockErrors = [];
   window.addEventListener('error', e => {
     window.__mockErrors.push(`error: ${e.message}`);
@@ -113,17 +114,21 @@ function tauriMock({ config, version }) {
   }
   window.__mockEmit = emit;
 
-  // Shapes mirror rust/src/gui/commands.rs + rust/src/engine.rs (v2.4.0):
-  // get_controller_status → ControllerStatus { name, transport, kind, warnings }.
+  // Shapes mirror rust/src/gui/commands.rs + rust/src/engine.rs (per-pad
+  // config): get_controller_status → ControllerStatus { name, transport,
+  // kind, warnings, connected }; get_config → { version: 2, pads: {...} }.
   const status = {
     name: 'DualSense Wireless Controller',
     transport: 'BT',
     kind: 'dualsense',
     warnings: [],
+    connected: ['dualsense'],
   };
+  const PAGE_FIELD = { base: 'buttons', quick_l: 'quick_l', quick_r: 'quick_r' };
 
   async function invoke(cmd, a) {
     window.__mockCalls.push(cmd);
+    window.__mockCallArgs.push({ cmd, args: a === undefined ? null : JSON.parse(JSON.stringify(a)) });
     const clone = v => JSON.parse(JSON.stringify(v));
     switch (cmd) {
       case 'get_controller_status': return clone(status);
@@ -131,10 +136,17 @@ function tauriMock({ config, version }) {
       case 'get_ui_prefs':          return clone(state.prefs);
       case 'set_ui_prefs':          state.prefs = clone(a.prefs); return null;
       case 'get_app_version':       return version;
-      case 'set_binding':
-        state.config.buttons[String(a.id)] = clone(a.entry);
+      case 'set_binding': {
+        // Like the backend: a missing pad / page is an IPC error.
+        const pad = state.config.pads?.[a.pad];
+        const field = PAGE_FIELD[a.page];
+        if (!pad || !field) throw new Error(`set_binding: bad pad/page ${a.pad}/${a.page}`);
+        pad[field] = pad[field] || {};
+        if (a.page !== 'base' && a.entry.type === 'unbound') delete pad[field][String(a.id)];
+        else pad[field][String(a.id)] = clone(a.entry);
         emitConfigChanged();
         return null;
+      }
       case 'set_macro':
         state.config.macros = state.config.macros || {};
         state.config.macros[a.name] = clone(a.def);
@@ -348,6 +360,40 @@ try {
   await page.waitForTimeout(100);
   const row0Unbound = await page.locator('#chip-list .chip-row').first().locator('.chip-mute').count();
   check('bind popup Save → set_binding → chip list refreshed', row0Unbound === 1);
+
+  // Key capture path: row 0 → Key → press F → Save → set_binding aimed at
+  // the shown pad's base table.
+  await page.locator('#chip-list .chip-row').first().click();
+  await page.click('.bind-popup-overlay .seg-item[data-seg="key"]');
+  await page.waitForTimeout(50);
+  await page.keyboard.press('f');
+  await page.click('.bind-popup-overlay .bp-save');
+  await page.locator('.bind-popup-overlay').waitFor({ state: 'detached', timeout: 3000 });
+  await page.waitForTimeout(100);
+  const lastBind = await page.evaluate(() =>
+    window.__mockCallArgs.filter(c => c.cmd === 'set_binding').pop());
+  check('Key capture Save → set_binding { pad: dualsense, page: base, id 0, key F }',
+    lastBind?.args?.pad === 'dualsense' && lastBind?.args?.page === 'base' &&
+      lastBind?.args?.id === 0 && lastBind?.args?.entry?.type === 'key' &&
+      /^f$/i.test(lastBind?.args?.entry?.value ?? ''),
+    JSON.stringify(lastBind));
+  const row0Key = await page.locator('#chip-list .chip-row').first().textContent();
+  check('chip list shows the new key after config-changed', /\bF\b/i.test(row0Key), row0Key);
+
+  // The shown table follows the connected pad: the Switch Pro's touchpad
+  // id 25 is unbound, the DualSense's is mouse left.
+  const row25 = () => page.locator('#chip-list .chip-row[data-id="25"] .chip-mute').count();
+  const dsRow25Unbound = await row25();
+  await page.evaluate(() => window.__mockEmit('controller-status',
+    { connected: true, name: 'Switch Pro Controller', transport: 'BT', kind: 'ns_pro', connected_pads: ['ns_pro'] }));
+  await page.waitForTimeout(150);
+  const nsRow25Unbound = await row25();
+  await page.evaluate(() => window.__mockEmit('controller-status',
+    { connected: true, name: 'DualSense Wireless Controller', transport: 'BT', kind: 'dualsense', connected_pads: ['dualsense'] }));
+  await page.waitForTimeout(150);
+  check('chip list follows the connected pad (ns_pro table, then back to dualsense)',
+    dsRow25Unbound === 0 && nsRow25Unbound === 1 && (await row25()) === 0,
+    `dualsense=${dsRow25Unbound} ns_pro=${nsRow25Unbound}`);
 
   // Controller hotspots: click each [data-id] hit zone at its centre.
   const hotspotIds = await page.locator('#controller-host svg.controller [data-id]')

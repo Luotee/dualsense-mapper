@@ -40,7 +40,7 @@ If anything goes wrong, the program shows the error and waits for you to press E
 
 ## Button id reference
 
-The config requires every id 0..=24 to be present, even if `"type": "unbound"`. This is so the user can see the full surface without guessing. The on-device readout from `--list-buttons` is authoritative — gilrs may map ids differently across USB vs Bluetooth or across OSes.
+Each controller has its own table under `pads` (`dualsense`, `ns_pro`, `ns2_pro`), and each table's `buttons` must list every id 0..=32, even if `"type": "unbound"`. This is so the user can see the full surface without guessing. The on-device readout from `--list-buttons` is authoritative — gilrs may map ids differently across USB vs Bluetooth or across OSes.
 
 | Id | Source | Default label |
 |---:|---|---|

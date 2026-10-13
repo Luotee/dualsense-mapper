@@ -11,6 +11,7 @@
 import { invoke, listen } from './ipc.js';
 import { normaliseKeyEvent } from './key_capture.js';
 import { setCaptureActive } from './capture_state.js';
+import { allSlots } from './pad_view.js';
 
 let config       = null;   // Current snapshot from get_config
 let selectedName = null;   // Which macro is in the editor
@@ -615,19 +616,12 @@ async function deleteWithCheck(name) {
   if (refs.length) {
     const ok = window.confirm(
       `"${name}" is bound to ${refs.length} button(s):\n` +
-      refs.map(r => `  ${r.id}: ${r.label}`).join('\n') +
+      refs.map(r => `  ${r.pad} ${r.id}: ${r.label}`).join('\n') +
       `\n\nUnbind and delete the macro?`
     );
     if (!ok) return;
-    for (const r of refs) {
-      try {
-        await invoke('set_binding', {
-          id: Number(r.id),
-          entry: { label: r.label, type: 'unbound' },
-        });
-      } catch (_) { /* best effort */ }
-    }
   }
+  // delete_macro unbinds it on every pad and page itself, in one write.
   try {
     await invoke('delete_macro', { name });
     if (selectedName === name) { selectedName = null; working = null; }
@@ -639,16 +633,16 @@ async function deleteWithCheck(name) {
 // ─── Binding cross-reference helpers ─────────────────────────────────────────
 // ButtonEntry is serde-flattened: { label, type, value } — no nested .binding
 
+// Every pad and page (pad_view.js allSlots).
+
 function isBound(name) {
-  return Object.values(config.buttons || {}).some(e =>
-    e.type === 'macro' && e.value === name
-  );
+  return listBindings(name).length > 0;
 }
 
 function listBindings(name) {
-  return Object.entries(config.buttons || {})
-    .filter(([, e]) => e.type === 'macro' && e.value === name)
-    .map(([id, e]) => ({ id, label: e.label }));
+  return allSlots(config)
+    .filter(({ entry }) => entry.type === 'macro' && entry.value === name)
+    .map(({ pad, id, entry }) => ({ pad, id, label: entry.label }));
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

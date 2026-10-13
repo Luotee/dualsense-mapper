@@ -4,6 +4,7 @@ import * as macros    from './macros.js';
 import * as settings  from './settings.js';
 import * as activity  from './activity.js';
 import * as kbdMirror from './keyboard_mirror.js';
+import * as padView   from './pad_view.js';
 
 const tabs = ['mappings', 'macros', 'settings'];
 
@@ -35,11 +36,15 @@ function setStatus(connected, name, transport) {
 // registered. Seed from a synchronous query first.
 try {
   const initial = await invoke('get_controller_status');
+  padView.setStatus(initial);
   if (initial) setStatus(true, initial.name, initial.transport);
 } catch (e) {
   console.warn('get_controller_status failed', e);
 }
-await listen('controller-status', s => setStatus(s.connected, s.name, s.transport));
+await listen('controller-status', s => {
+  padView.setStatus(s);
+  setStatus(s.connected, s.name, s.transport);
+});
 
 await mappings.init();
 await macros.init();
