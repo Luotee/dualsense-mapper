@@ -356,6 +356,96 @@ try {
   }));
   check('overscroll-behavior none on html/body', ob.html === 'none' && ob.body === 'none', JSON.stringify(ob));
 
+  // ── Task 6: live feedback and key capture ─────────────────────────────────
+  await page.click('#board [data-pad="dualsense"]');
+  await settle(page);
+  await page.evaluate(() => window.__mockEmit('button-down', { id: 12 }));
+  await settle(page);
+  check('button-down lights its slot and its line', (await slot(page, '12').getAttribute('class')).includes('hit') &&
+    (await page.locator('#board .lines g.hit').count()) === 1);
+  check('button-down lights the bound tile', (await tile(page, '↓').getAttribute('class')).includes('hit'));
+  await page.evaluate(() => window.__mockEmit('button-up', { id: 12 }));
+  await settle(page);
+  check('button-up clears the highlight', !(await slot(page, '12').getAttribute('class')).includes('hit') &&
+    (await page.locator('#board .lines g.hit').count()) === 0);
+  await page.evaluate(() => { window.__mockEmit('button-down', { id: 23 }); window.__mockEmit('button-down', { id: 13 }); });
+  await settle(page);
+  check('page-mode L2 held: D-pad press lights the quick_l slot', (await slot(page, 'L13').getAttribute('class')).includes('hit') &&
+    !(await slot(page, '13').getAttribute('class')).includes('hit'));
+  await page.evaluate(() => { window.__mockEmit('button-up', { id: 13 }); window.__mockEmit('button-up', { id: 23 }); });
+  await settle(page);
+  await page.evaluate(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'q', action: 'down' }));
+  await settle(page);
+  check('emitted key lights its tile', (await tile(page, 'Q').getAttribute('class')).includes('hit'));
+  await page.evaluate(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'q', action: 'up' }));
+  await settle(page);
+  check('emitted key-up clears its tile', !(await tile(page, 'Q').getAttribute('class')).includes('hit'));
+
+  await page.keyboard.down('ArrowUp');
+  await page.waitForTimeout(80);
+  check('reverse lookup: a real key lights its tile and the slots bound to it',
+    (await tile(page, '↑').getAttribute('class')).includes('hit') && (await slot(page, '11').getAttribute('class')).includes('hit') &&
+    (await slot(page, '15').getAttribute('class')).includes('hit'));
+  await page.keyboard.up('ArrowUp');
+  await settle(page);
+  check('reverse lookup clears on key-up', !(await slot(page, '11').getAttribute('class')).includes('hit'));
+  await page.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'w', bubbles: true }));
+    setTimeout(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'w', action: 'down' }), 5);
+    setTimeout(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'w', action: 'up' }), 15);
+  });
+  await page.waitForTimeout(100);   // past the 30 ms window; the real key is still "down"
+  const synthLit = (await tile(page, 'W').getAttribute('class')).includes('hit');
+  await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW', key: 'w', bubbles: true })));
+  await settle(page);
+  check('reverse lookup ignores the engine\'s own synthesized key', synthLit === false, 'W lit after the engine typed it: ' + synthLit);
+
+  const capBefore = await countCalls(page, 'set_capture_active');
+  await slot(page, '3').click();
+  await settle(page);
+  check('clicking a slot starts key capture', (await lastCall(page, 'set_capture_active'))?.args?.active === true &&
+    (await countCalls(page, 'set_capture_active')) === capBefore + 1);
+  check('capture bar text is exact', ((await page.locator('#board .capbar').textContent()) || '').trim() === '按鍵鼠上的鍵，或點下面的方塊（Esc 取消）');
+  check('waiting slot has the keycap badge', (await slot(page, '3').locator('.kc').count()) === 1);
+  await page.keyboard.press('f');
+  await settle(page);
+  const capBind = await lastCall(page, 'set_binding');
+  check('pressed key binds the waiting slot', capBind?.args?.id === 3 && capBind.args.entry.value === 'f', JSON.stringify(capBind?.args));
+  check('capture ends after binding', (await lastCall(page, 'set_capture_active'))?.args?.active === false && (await page.locator('#board .capbar').count()) === 0);
+  await slot(page, '2').click();
+  await settle(page);
+  await slot(page, '2').click({ button: 'right' });
+  await settle(page);
+  const rc = await lastCall(page, 'set_binding');
+  check('right click while waiting binds 右鍵', rc?.args?.id === 2 && rc.args.entry.type === 'mouse' && rc.args.entry.value === 'right', JSON.stringify(rc?.args));
+  await slot(page, '1').click();
+  await settle(page);
+  await page.mouse.move(470, 500);
+  await page.mouse.wheel(0, -120);
+  await settle(page);
+  const wh = await lastCall(page, 'set_binding');
+  check('wheel up while waiting binds 滾輪上', wh?.args?.id === 1 && wh.args.entry.value === 'wheel-up', JSON.stringify(wh?.args));
+  const nBind = await countCalls(page, 'set_binding');
+  await slot(page, '0').click();
+  await settle(page);
+  await page.keyboard.press('Escape');
+  await settle(page);
+  check('Esc cancels capture without binding', (await countCalls(page, 'set_binding')) === nBind &&
+    (await lastCall(page, 'set_capture_active'))?.args?.active === false);
+  await slot(page, '0').click();
+  await settle(page);
+  await page.click('#board [data-pad="ns_pro"]');
+  await settle(page);
+  const endPad = (await lastCall(page, 'set_capture_active'))?.args?.active === false && (await page.locator('#board .capbar').count()) === 0;
+  await slot(page, '0').click();
+  await settle(page);
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await settle(page);
+  const endBlur = (await lastCall(page, 'set_capture_active'))?.args?.active === false && (await page.locator('#board .capbar').count()) === 0;
+  check('capture ends on pad switch and on blur', endPad && endBlur && (await countCalls(page, 'set_binding')) === nBind, `${endPad} ${endBlur}`);
+  await page.click('#board [data-pad="dualsense"]');
+  await settle(page);
+
   // @@NEXT-TASKS
 
   const inPageErrors = await page.evaluate(() => window.__mockErrors);

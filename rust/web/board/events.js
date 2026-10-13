@@ -34,7 +34,6 @@ export function wire(board) {
     }
     if (el.dataset.tile) {
       const t = el.dataset.tile;
-      if (state.sel !== null) { act.bindSlot(state.sel, t); return; }
       state.picked = state.picked === t ? null : t;
       rerender();
       return;

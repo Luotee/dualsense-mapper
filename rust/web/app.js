@@ -4,6 +4,7 @@ import { state, init, onRender } from './board/store.js';
 import { render } from './board/view.js';
 import { wire } from './board/events.js';
 import { resetInk } from './board/tags.js';
+import { startLive } from './board/live.js';
 
 const board = document.getElementById('board');
 
@@ -25,6 +26,7 @@ function mappingOff() {
 onRender(paint);
 await init();
 wire(board);
+await startLive();
 paint();
 fit();
 addEventListener('resize', fit);
