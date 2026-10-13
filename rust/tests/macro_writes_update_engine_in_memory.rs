@@ -129,6 +129,8 @@ fn rename_macro_impl_updates_engine_and_bindings_synchronously() {
     set_binding_impl(
         &h,
         tmp.path(),
+        dualsense_mapper::gamepad::ControllerKind::DualSense,
+        dualsense_mapper::pad_bindings::Page::Base,
         0,
         ButtonEntry { label: "b0".to_string(), binding: Binding::Macro("old".to_string()) },
     )
@@ -151,6 +153,8 @@ fn set_binding_impl_updates_engine_buttons_synchronously() {
     set_binding_impl(
         &h,
         tmp.path(),
+        dualsense_mapper::gamepad::ControllerKind::DualSense,
+        dualsense_mapper::pad_bindings::Page::Base,
         0,
         ButtonEntry { label: "Cross".to_string(), binding: Binding::Key("x".to_string()) },
     )

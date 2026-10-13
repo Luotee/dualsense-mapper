@@ -13,9 +13,13 @@
 //! `tauri::State`). The `#[tauri::command]` wrappers are gated on the `gui`
 //! feature; the `*_impl` functions are always compiled.
 
-use crate::config::{Binding, ButtonEntry, Config, MacroDef};
+use crate::config::{Binding, ButtonEntry, Config, MacroDef, ADDED_IDS};
 use crate::config_io::{write_atomic, ConfigDoc};
 use crate::engine::Handle;
+use crate::gamepad::ControllerKind;
+use crate::pad_bindings::{
+    default_pad_bindings, PadBindings, Page, Side, TriggerMode, LABELS, QUICK_IDS,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 #[cfg(feature = "gui")]
@@ -48,10 +52,91 @@ pub fn set_binding(
     app: tauri::AppHandle,
     engine: State<'_, Handle>,
     config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+    page: Page,
     id: u32,
     entry: ButtonEntry,
 ) -> Result<(), String> {
-    set_binding_impl(&*engine, &config_path, id, entry).map_err(|e| format!("{e:#}"))?;
+    set_binding_impl(&*engine, &config_path, pad, page, id, entry).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Tauri command: swap two slots of one pad (base or page) in one write, so
+/// a drag-swap cannot tear. JS passes `pageA`, `idA`, `pageB`, `idB`.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn swap_bindings(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+    page_a: Page,
+    id_a: u32,
+    page_b: Page,
+    id_b: u32,
+) -> Result<(), String> {
+    swap_bindings_impl(&*engine, &config_path, pad, (page_a, id_a), (page_b, id_b))
+        .map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Tauri command: set one trigger's mode (`page` / `key`) on one pad.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn set_trigger_mode(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+    side: Side,
+    mode: TriggerMode,
+) -> Result<(), String> {
+    set_trigger_mode_impl(&*engine, &config_path, pad, side, mode).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Tauri command: 全部清除 — unbind every slot of one pad.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn clear_pad(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+) -> Result<(), String> {
+    clear_pad_impl(&*engine, &config_path, pad).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Tauri command: 恢復預設 — one pad back to the default table.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn reset_pad(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+) -> Result<(), String> {
+    reset_pad_impl(&*engine, &config_path, pad).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Tauri command: write one pad's whole table (復原 / 重做).
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn set_pad_tables(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+    tables: PadBindings,
+) -> Result<(), String> {
+    set_pad_tables_impl(&*engine, &config_path, pad, tables).map_err(|e| format!("{e:#}"))?;
     let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
     Ok(())
 }
@@ -66,33 +151,166 @@ pub fn get_config_impl(engine: &Handle) -> Config {
     engine.config_read().clone()
 }
 
+/// Load the on-disk config, patch it, validate, write it atomically, then
+/// replace the live engine config with the result (which bumps the
+/// generation the mapper watches). Any failure leaves disk and engine
+/// unchanged.
+fn mutate_config(
+    engine: &Handle,
+    config_path: &Path,
+    patch: impl FnOnce(&mut ConfigDoc) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut doc = ConfigDoc::load(config_path)?;
+    patch(&mut doc)?;
+    doc.validate()?;
+    write_atomic(config_path, &doc)?;
+    *engine.config_write() = doc.typed().clone();
+    Ok(())
+}
+
+/// A quick page holds only `QUICK_IDS`; the base table any id `0..=32`.
+fn check_slot(page: Page, id: u32) -> anyhow::Result<()> {
+    if !crate::config::VALID_BUTTON_IDS.contains(&id) {
+        anyhow::bail!("unknown button id {id}; allowed range is 0..=32");
+    }
+    if page != Page::Base && !QUICK_IDS.contains(&id) {
+        anyhow::bail!("button id {id} is not allowed on a quick page (only 0..=3 and 11..=14)");
+    }
+    Ok(())
+}
+
 /// Pure implementation of `set_binding` callable without `tauri::State`.
 ///
-/// Loads the on-disk config via `ConfigDoc`, patches the button entry,
-/// validates the result, and only then atomically writes to disk and
-/// hot-rebinds the live engine. Any failure leaves both disk and engine
-/// state unchanged.
+/// Sets one slot (`page`, `id`) of one pad. On a quick page an `Unbound`
+/// entry removes the slot. Disk and engine change together or not at all.
 pub fn set_binding_impl(
     engine: &Handle,
     config_path: &Path,
+    pad: ControllerKind,
+    page: Page,
     id: u32,
     entry: ButtonEntry,
 ) -> anyhow::Result<()> {
-    let mut doc = ConfigDoc::load(config_path)?;
-    doc.replace_binding(
-        crate::gamepad::ControllerKind::DualSense,
-        crate::pad_bindings::Page::Base,
-        id,
-        entry.clone(),
-    );
-    doc.validate()?;
-    write_atomic(config_path, &doc)?;
-    engine
-        .config_write()
-        .pad_mut(crate::gamepad::ControllerKind::DualSense)
-        .buttons
-        .insert(id.to_string(), entry);
-    Ok(())
+    check_slot(page, id)?;
+    mutate_config(engine, config_path, |doc| {
+        doc.replace_binding(pad, page, id, entry);
+        Ok(())
+    })
+}
+
+/// Pure implementation of `swap_bindings`: the two slots exchange their
+/// bindings (each slot keeps its own label) in one load and one write.
+/// An empty page slot counts as `Unbound`.
+pub fn swap_bindings_impl(
+    engine: &Handle,
+    config_path: &Path,
+    pad: ControllerKind,
+    a: (Page, u32),
+    b: (Page, u32),
+) -> anyhow::Result<()> {
+    check_slot(a.0, a.1)?;
+    check_slot(b.0, b.1)?;
+    mutate_config(engine, config_path, |doc| {
+        let slot = |doc: &ConfigDoc, (page, id): (Page, u32)| -> ButtonEntry {
+            doc.typed()
+                .pad(pad)
+                .table(page)
+                .get(&id.to_string())
+                .cloned()
+                .unwrap_or_else(|| ButtonEntry {
+                    label: LABELS[id as usize].to_string(),
+                    binding: Binding::Unbound,
+                })
+        };
+        let ea = slot(doc, a);
+        let eb = slot(doc, b);
+        doc.replace_binding(pad, a.0, a.1, ButtonEntry { label: ea.label, binding: eb.binding });
+        doc.replace_binding(pad, b.0, b.1, ButtonEntry { label: eb.label, binding: ea.binding });
+        Ok(())
+    })
+}
+
+/// Pure implementation of `set_trigger_mode`.
+pub fn set_trigger_mode_impl(
+    engine: &Handle,
+    config_path: &Path,
+    pad: ControllerKind,
+    side: Side,
+    mode: TriggerMode,
+) -> anyhow::Result<()> {
+    mutate_config(engine, config_path, |doc| {
+        doc.set_trigger_mode(pad, side, mode);
+        Ok(())
+    })
+}
+
+/// Pure implementation of `clear_pad`: every base slot unbound (labels
+/// kept), both pages empty, trigger modes kept.
+pub fn clear_pad_impl(engine: &Handle, config_path: &Path, pad: ControllerKind) -> anyhow::Result<()> {
+    mutate_config(engine, config_path, |doc| {
+        let cleared = doc.typed().pad(pad).cleared();
+        doc.replace_pad(pad, cleared);
+        Ok(())
+    })
+}
+
+/// Pure implementation of `reset_pad`: the default table (spec 4.8).
+pub fn reset_pad_impl(engine: &Handle, config_path: &Path, pad: ControllerKind) -> anyhow::Result<()> {
+    mutate_config(engine, config_path, |doc| {
+        doc.replace_pad(pad, default_pad_bindings(pad));
+        Ok(())
+    })
+}
+
+/// Pure implementation of `set_pad_tables`: one pad's whole table, checked
+/// like a load (ids added since v2.0 are filled in, then validated).
+pub fn set_pad_tables_impl(
+    engine: &Handle,
+    config_path: &Path,
+    pad: ControllerKind,
+    mut tables: PadBindings,
+) -> anyhow::Result<()> {
+    for (id, label) in ADDED_IDS {
+        tables.buttons.entry(id.to_string()).or_insert_with(|| ButtonEntry {
+            label: (*label).to_string(),
+            binding: Binding::Unbound,
+        });
+    }
+    mutate_config(engine, config_path, |doc| {
+        doc.replace_pad(pad, tables);
+        Ok(())
+    })
+}
+
+/// Every pad and page with every binding to macro `name` rewritten by
+/// `f` (`None` = unbind: base slots become `Unbound`, page slots are
+/// removed).
+fn rewrite_macro_refs(doc: &mut ConfigDoc, name: &str, f: impl Fn() -> Option<Binding>) {
+    for kind in ControllerKind::ALL {
+        let mut pad = doc.typed().pad(kind).clone();
+        let mut changed = false;
+        for page in [Page::Base, Page::QuickL, Page::QuickR] {
+            let table = pad.table_mut(page);
+            let hits: Vec<String> = table
+                .iter()
+                .filter(|(_, e)| matches!(e.binding, Binding::Macro(ref n) if n == name))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in hits {
+                changed = true;
+                match (f(), page) {
+                    (Some(b), _) => table.get_mut(&id).expect("listed above").binding = b,
+                    (None, Page::Base) => table.get_mut(&id).expect("listed above").binding = Binding::Unbound,
+                    (None, _) => {
+                        table.remove(&id);
+                    }
+                }
+            }
+        }
+        if changed {
+            doc.replace_pad(kind, pad);
+        }
+    }
 }
 
 // ─── set_macro ───────────────────────────────────────────────────────────────
@@ -132,8 +350,7 @@ pub fn set_macro_impl(
 
 // ─── delete_macro ────────────────────────────────────────────────────────────
 
-/// Tauri command: delete a named macro, checking it is not referenced by any
-/// button binding before removal.
+/// Tauri command: delete a named macro and unbind it on every pad and page.
 #[cfg_attr(feature = "gui", tauri::command)]
 #[cfg(feature = "gui")]
 pub fn delete_macro(
@@ -149,39 +366,20 @@ pub fn delete_macro(
 
 /// Pure implementation of `delete_macro` callable without `tauri::State`.
 ///
-/// Returns an error if any button binding references the macro (referential
-/// integrity check). The error message names both the macro and the button id.
+/// Unbinds the macro everywhere first — every pad, every page (spec 4.6:
+/// deleting a macro also unbinds it) — then removes it, in one write.
 pub fn delete_macro_impl(
     engine: &Handle,
     config_path: &Path,
     name: &str,
 ) -> anyhow::Result<()> {
-    let mut doc = ConfigDoc::load(config_path)?;
-    // Referential check: refuse if any button binding points at this macro.
-    let bound_to: Vec<String> = doc
-        .typed()
-        .pads
-        .iter()
-        .flat_map(|(slug, pad)| {
-            pad.buttons.iter().filter_map(move |(id, entry)| match &entry.binding {
-                Binding::Macro(n) if n == name => Some(format!("{slug} {id}")),
-                _ => None,
-            })
-        })
-        .collect();
-    if !bound_to.is_empty() {
-        anyhow::bail!(
-            "cannot delete macro '{name}' — bound by button {}",
-            bound_to.join(", ")
-        );
-    }
-    let mut macros = doc.typed().macros.clone();
-    macros.remove(name);
-    doc.replace_macros(macros);
-    doc.validate()?;
-    write_atomic(config_path, &doc)?;
-    engine.config_write().macros = doc.typed().macros.clone();
-    Ok(())
+    mutate_config(engine, config_path, |doc| {
+        rewrite_macro_refs(doc, name, || None);
+        let mut macros = doc.typed().macros.clone();
+        macros.remove(name);
+        doc.replace_macros(macros);
+        Ok(())
+    })
 }
 
 // ─── rename_macro ────────────────────────────────────────────────────────────
@@ -204,8 +402,8 @@ pub fn rename_macro(
 
 /// Pure implementation of `rename_macro` callable without `tauri::State`.
 ///
-/// Renames the macro in the macros map and rewrites every button binding that
-/// referenced the old name so referential integrity is preserved.
+/// Renames the macro in the macros map and rewrites every binding, on every
+/// pad and page, that referenced the old name.
 pub fn rename_macro_impl(
     engine: &Handle,
     config_path: &Path,
@@ -215,32 +413,21 @@ pub fn rename_macro_impl(
     if old == new {
         return Ok(());
     }
-    let mut doc = ConfigDoc::load(config_path)?;
-    if !doc.typed().macros.contains_key(old) {
-        anyhow::bail!("macro '{old}' does not exist");
-    }
-    if doc.typed().macros.contains_key(new) {
-        anyhow::bail!("macro '{new}' already exists");
-    }
-    // Rename in macros map.
-    let mut macros = doc.typed().macros.clone();
-    let def = macros.remove(old).expect("just checked");
-    macros.insert(new.to_string(), def);
-    doc.replace_macros(macros);
-    // Update every base binding, on every pad, that points at the old name.
-    for kind in crate::gamepad::ControllerKind::ALL {
-        let mut pad = doc.typed().pad(kind).clone();
-        for entry in pad.buttons.values_mut() {
-            if matches!(entry.binding, Binding::Macro(ref n) if n == old) {
-                entry.binding = Binding::Macro(new.to_string());
-            }
+    mutate_config(engine, config_path, |doc| {
+        if !doc.typed().macros.contains_key(old) {
+            anyhow::bail!("macro '{old}' does not exist");
         }
-        doc.replace_pad(kind, pad);
-    }
-    doc.validate()?;
-    write_atomic(config_path, &doc)?;
-    *engine.config_write() = doc.typed().clone();
-    Ok(())
+        if doc.typed().macros.contains_key(new) {
+            anyhow::bail!("macro '{new}' already exists");
+        }
+        let mut macros = doc.typed().macros.clone();
+        let def = macros.remove(old).expect("just checked");
+        macros.insert(new.to_string(), def);
+        doc.replace_macros(macros);
+        // Every binding, on every pad and page, follows the new name.
+        rewrite_macro_refs(doc, old, || Some(Binding::Macro(new.to_string())));
+        Ok(())
+    })
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────

@@ -106,6 +106,11 @@ pub fn run(cfg: Config, opts: RunOptions) -> Result<()> {
         .invoke_handler(tauri::generate_handler![
             crate::gui::commands::get_config,
             crate::gui::commands::set_binding,
+            crate::gui::commands::swap_bindings,
+            crate::gui::commands::set_trigger_mode,
+            crate::gui::commands::clear_pad,
+            crate::gui::commands::reset_pad,
+            crate::gui::commands::set_pad_tables,
             crate::gui::commands::set_macro,
             crate::gui::commands::delete_macro,
             crate::gui::commands::rename_macro,
