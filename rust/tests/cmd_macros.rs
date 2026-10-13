@@ -45,8 +45,7 @@ fn delete_macro_blocked_when_bound_to_button() {
     let mut cfg = test_helpers::load_example();
     // Ensure macro "doomed" exists and is bound to button id 23 (L2 trigger).
     cfg.macros.insert("doomed".into(), sample_macro());
-    cfg.buttons.insert(
-        "23".into(),
+    cfg.bind_everywhere(23,
         ButtonEntry {
             label: "L2".into(),
             binding: Binding::Macro("doomed".into()),
@@ -89,8 +88,7 @@ fn delete_macro_succeeds_when_unbound() {
 fn rename_macro_updates_all_bindings() {
     let mut cfg = test_helpers::load_example();
     cfg.macros.insert("old_name".into(), sample_macro());
-    cfg.buttons.insert(
-        "23".into(),
+    cfg.bind_everywhere(23,
         ButtonEntry {
             label: "L2".into(),
             binding: Binding::Macro("old_name".into()),
@@ -106,7 +104,7 @@ fn rename_macro_updates_all_bindings() {
     assert!(!live.macros.contains_key("old_name"));
     assert!(live.macros.contains_key("new_name"));
     // Binding for button 23 follows the rename
-    if let Binding::Macro(ref name) = live.buttons["23"].binding {
+    if let Binding::Macro(ref name) = live.pad(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons["23"].binding {
         assert_eq!(name, "new_name");
     } else {
         panic!("button 23 should still be a macro binding after rename");

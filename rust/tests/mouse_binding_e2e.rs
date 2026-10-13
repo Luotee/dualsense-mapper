@@ -20,13 +20,21 @@ fn cfg_with_touchpad_tl_left_click() -> Config {
         ButtonEntry { label: "Touchpad TL".into(), binding: Binding::Mouse(MouseButton::Left) },
     );
     Config {
-        version: 1,
+        version: 2,
         deadzone: 0.4,
         trigger_threshold: 0.5,
         min_press_ms: [8, 25],
         tick_jitter_ms: [0, 3],
         log_events: false,
-        buttons,
+        pads: dualsense_mapper::gamepad::ControllerKind::ALL
+            .into_iter()
+            .map(|k| (k.slug().to_string(), dualsense_mapper::pad_bindings::PadBindings {
+                buttons: buttons.clone(),
+                quick_l: BTreeMap::new(),
+                quick_r: BTreeMap::new(),
+                trigger_mode: Default::default(),
+            }))
+            .collect(),
         macros: BTreeMap::new(),
         touchpad_cursor_enabled: true,
         touchpad_cursor_sensitivity: 1.5,

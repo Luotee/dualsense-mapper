@@ -272,7 +272,8 @@ fn first_run_copy(target: &std::path::Path) -> Result<()> {
 fn list_buttons(cfg: Option<Config>) -> Result<()> {
     let label_for = |id: u32| -> String {
         cfg.as_ref()
-            .and_then(|c| c.buttons.get(&id.to_string()))
+            .and_then(|c| c.pads.get("dualsense"))
+            .and_then(|p| p.buttons.get(&id.to_string()))
             .map(|e| e.label.clone())
             .unwrap_or_else(|| "<no label — id not in config>".into())
     };

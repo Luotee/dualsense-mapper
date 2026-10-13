@@ -82,7 +82,11 @@ pub fn set_binding_impl(
     doc.replace_button(id, entry.clone());
     doc.validate()?;
     write_atomic(config_path, &doc)?;
-    engine.config_write().buttons.insert(id.to_string(), entry);
+    engine
+        .config_write()
+        .pad_mut(crate::gamepad::ControllerKind::DualSense)
+        .buttons
+        .insert(id.to_string(), entry);
     Ok(())
 }
 
@@ -151,11 +155,13 @@ pub fn delete_macro_impl(
     // Referential check: refuse if any button binding points at this macro.
     let bound_to: Vec<String> = doc
         .typed()
-        .buttons
+        .pads
         .iter()
-        .filter_map(|(id, entry)| match &entry.binding {
-            Binding::Macro(n) if n == name => Some(id.clone()),
-            _ => None,
+        .flat_map(|(slug, pad)| {
+            pad.buttons.iter().filter_map(move |(id, entry)| match &entry.binding {
+                Binding::Macro(n) if n == name => Some(format!("{slug} {id}")),
+                _ => None,
+            })
         })
         .collect();
     if !bound_to.is_empty() {
@@ -216,19 +222,15 @@ pub fn rename_macro_impl(
     let def = macros.remove(old).expect("just checked");
     macros.insert(new.to_string(), def);
     doc.replace_macros(macros);
-    // Update every button binding that points at the old name.
-    let buttons_snapshot = doc.typed().buttons.clone();
-    for (id_str, entry) in &buttons_snapshot {
-        if let Binding::Macro(ref n) = entry.binding {
-            if n == old {
-                let id: u32 = id_str.parse().expect("button keys are u32 strings");
-                let updated = ButtonEntry {
-                    label: entry.label.clone(),
-                    binding: Binding::Macro(new.to_string()),
-                };
-                doc.replace_button(id, updated);
+    // Update every base binding, on every pad, that points at the old name.
+    for kind in crate::gamepad::ControllerKind::ALL {
+        let mut pad = doc.typed().pad(kind).clone();
+        for entry in pad.buttons.values_mut() {
+            if matches!(entry.binding, Binding::Macro(ref n) if n == old) {
+                entry.binding = Binding::Macro(new.to_string());
             }
         }
+        doc.replace_pad(kind, pad);
     }
     doc.validate()?;
     write_atomic(config_path, &doc)?;

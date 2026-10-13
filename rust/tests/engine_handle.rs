@@ -66,7 +66,7 @@ fn hot_rebind_picks_up_new_binding_on_next_event() {
     // Swap binding for id 0 from "x" to Unbound.
     {
         let mut guard = handle.config_write();
-        guard.buttons.get_mut("0").unwrap().binding = dualsense_mapper::config::Binding::Unbound;
+        guard.pad_mut(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons.get_mut("0").unwrap().binding = dualsense_mapper::config::Binding::Unbound;
     }
 
     // Give the engine loop a full tick (8 ms) to notice the config change.

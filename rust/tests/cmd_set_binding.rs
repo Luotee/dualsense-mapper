@@ -21,9 +21,9 @@ fn set_binding_persists_and_updates_live_engine() {
     // hot rebind: live config reflects the change
     let live = handle.config_read();
     assert!(
-        matches!(live.buttons.get("3").unwrap().binding, Binding::Key(ref k) if k == "F1"),
+        matches!(live.pad(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons.get("3").unwrap().binding, Binding::Key(ref k) if k == "F1"),
         "live config should have F1; got: {:?}",
-        live.buttons.get("3")
+        live.pad(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons.get("3")
     );
 
     // persisted: disk was written
@@ -66,7 +66,7 @@ fn set_binding_rejects_invalid_key_name_and_does_not_persist() {
 
     // live state unchanged (still the original binding for id 3)
     let live = handle.config_read();
-    if let Binding::Key(ref k) = live.buttons.get("3").unwrap().binding {
+    if let Binding::Key(ref k) = live.pad(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons.get("3").unwrap().binding {
         assert_ne!(k, "F99");
     }
     drop(live);

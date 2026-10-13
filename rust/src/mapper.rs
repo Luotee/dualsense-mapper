@@ -79,7 +79,11 @@ impl Mapper {
     }
 
     fn binding_for(&self, id: u32) -> Option<&Binding> {
-        self.cfg.buttons.get(&id.to_string()).map(|e| &e.binding)
+        self.cfg
+            .pad(crate::gamepad::ControllerKind::DualSense)
+            .buttons
+            .get(&id.to_string())
+            .map(|e| &e.binding)
     }
 
     fn physical_down(&self, id: u32) -> Vec<KeyAction> {
@@ -192,14 +196,23 @@ mod tests {
                 key: "Left".into(), action: StepAction::Down, delay_ms: [10, 20],
             }],
         });
+        let pads = crate::gamepad::ControllerKind::ALL
+            .into_iter()
+            .map(|k| (k.slug().to_string(), crate::pad_bindings::PadBindings {
+                buttons: buttons.clone(),
+                quick_l: BTreeMap::new(),
+                quick_r: BTreeMap::new(),
+                trigger_mode: Default::default(),
+            }))
+            .collect();
         Config {
-            version: 1,
+            version: 2,
             deadzone: 0.4,
             trigger_threshold: 0.5,
             min_press_ms: [8, 25],
             tick_jitter_ms: [0, 3],
             log_events: false,
-            buttons, macros,
+            pads, macros,
             touchpad_cursor_enabled: true,
             touchpad_cursor_sensitivity: 1.5,
             touchpad_midpoint_x: 960,
