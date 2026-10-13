@@ -44,13 +44,21 @@ export function createCapture(pad) {
         }
         return;
       }
-      r.forEach((v, i) => { c.min[i] = Math.min(c.min[i], v); c.max[i] = Math.max(c.max[i], v); });
-      for (const s of [0, 1]) {
-        const dx = r[2 * s] - c.center[2 * s], dy = r[2 * s + 1] - c.center[2 * s + 1];
+      // Rust also sends the per-axis extents reached between two polls
+      // (raw_min / raw_max), so a fast rotation still counts.
+      const lo = pos.raw_min || r, hi = pos.raw_max || r;
+      for (const v of [r, lo, hi]) v.forEach((x, i) => { c.min[i] = Math.min(c.min[i], x); c.max[i] = Math.max(c.max[i], x); });
+      const lit = (s, x, y) => {
+        const dx = x - c.center[2 * s], dy = y - c.center[2 * s + 1];
         if (Math.hypot(dx, dy) > SECTOR_MAG) {
           const deg = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
           c.sectors[s][Math.round(deg / 45) % 8] = true;
         }
+      };
+      for (const s of [0, 1]) {
+        const X = 2 * s, Y = X + 1;
+        lit(s, r[X], r[Y]);
+        for (const x of [lo[X], hi[X]]) for (const y of [lo[Y], hi[Y]]) lit(s, x, y);
       }
       if (c.sectors.every(s => s.every(Boolean))) {
         const ax = i => ({ center: c.center[i], neg: c.center[i] - c.min[i], pos: c.max[i] - c.center[i] });

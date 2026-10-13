@@ -68,3 +68,23 @@ test('capture_cancels_when_owner_changes', () => {
   assert.equal(d.step, 0);
   assert.equal(d.reason, 'pad');
 });
+
+test('extent between polls lights its sector', () => {
+  const c = createCapture('ns2_pro');
+  c.start(0);
+  const t = rest(c, 0, REST_MS + 100, 0, 0);
+  assert.equal(c.step, 2);
+  // Centred sample, but the stick reached the right rim between two polls.
+  c.feed({ pad: 'ns2_pro', raw: [0, 0, 0, 0], cal: [0, 0, 0, 0], raw_min: [0, 0, 0, 0], raw_max: [1.0, 0, 0, 0] }, t);
+  assert.equal(c.sectors[0][0], true);
+  assert.equal(c.max[0], 1.0);
+});
+
+test('extent corners light the diagonal sector', () => {
+  const c = createCapture('ns2_pro');
+  c.start(0);
+  const t = rest(c, 0, REST_MS + 100, 0, 0);
+  c.feed({ pad: 'ns2_pro', raw: [0, 0, 0, 0], cal: [0, 0, 0, 0], raw_min: [-0.7, -0.7, 0, 0], raw_max: [0, 0, 0, 0] }, t);
+  assert.equal(c.sectors[0][5], true);   // 225°
+  assert.equal(c.min[1], -0.7);
+});

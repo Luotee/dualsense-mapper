@@ -163,9 +163,10 @@ impl Handle {
     }
 
     /// The session owner's latest stick positions, raw and corrected
-    /// (`None`: no controller connected, or no stick report yet).
+    /// (`None`: no controller connected, or no stick report yet), with the
+    /// raw extents seen since the previous call.
     pub fn stick_positions(&self) -> Option<StickPositions> {
-        self.inner.stick_probe.snapshot()
+        self.inner.stick_probe.take()
     }
 
     pub fn set_paused(&self, v: bool) {
