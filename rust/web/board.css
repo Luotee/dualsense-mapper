@@ -1,0 +1,231 @@
+/* The key-binding board (spec 4), from the approved mockup keymap-board.html.
+   Designed at 980×640 and scaled uniformly to the window (app.js); the
+   window itself never scrolls. */
+@font-face{font-family:'Cubic11';src:url(fonts/cubic11.woff2) format('woff2');font-display:block}
+:root{
+  color-scheme:light;
+  --bg:#d9dde6; --panel:#b9c0cf; --frame:#7d8597; --ink:#2d3142; --mute:#5d6477;
+  --navy:#4b5a7c; --navy2:#2e3850; --pink:#a8587a; --pinkd:#6e3a52; --pinkhi:#b2416e;
+  --red:#c4232c; --gold:#ffcf2e; --paper:#e9ecf2; --slot:#f6f7fa; --white:#ffffff; --off:#c3c8d2;
+  --font:'Cubic11',system-ui,"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;
+}
+button:focus-visible,.mock .rng:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+.slot{position:absolute;width:38px;height:38px;box-sizing:border-box;padding:0;cursor:pointer;display:flex;align-items:center;justify-content:center;font:inherit;border:2px solid #6c7386;background:var(--slot);border-radius:6px;box-shadow:inset 2px 2px 0 rgba(255,255,255,.4),inset -2px -2px 0 rgba(0,0,0,.18)}
+/* Every corner tag (text or icon) is an 8 px tall ink box anchored at the same point, 3 px inside the border. */
+.slot .tag{position:absolute;left:3px;top:3px;display:block;line-height:0;color:var(--mute)}
+.slot .tag svg{display:block;overflow:visible}
+.slot .val{font-size:11px;margin-top:7px;white-space:nowrap;color:var(--white);max-width:34px;overflow:hidden}
+.slot.on{background:var(--pink);border-color:var(--pinkd);cursor:grab}
+.slot.on .tag{color:#fde6ef}
+.slot.sel{outline:3px solid var(--gold);outline-offset:1px}
+.slot.wait{outline:3px dashed var(--gold);outline-offset:2px;animation:waitpulse 1s ease-in-out infinite}
+.slot .kc{position:absolute;right:2px;top:2px;display:flex;color:var(--ink);background:var(--gold);border-radius:3px;padding:1px}
+.slot .kc svg{width:13px;height:10px}
+@keyframes waitpulse{50%{outline-color:rgba(255,207,46,.25)}}
+.mock .capbar{position:absolute;left:50%;top:-14px;transform:translateX(-50%);padding:2px 12px;border:2px solid #7a5c00;border-radius:6px;background:var(--gold);color:#3a2a00;font-size:11px;white-space:nowrap;z-index:2}
+.mock .pal.waitkbd .kbd{box-shadow:0 0 0 3px var(--gold),0 0 14px 4px rgba(255,207,46,.8);animation:kbdpulse 1s ease-in-out infinite}
+@keyframes kbdpulse{50%{box-shadow:0 0 0 3px rgba(255,207,46,.4),0 0 4px 1px rgba(255,207,46,.3)}}
+.slot.wide{width:70px}
+.slot.wide .val{font-size:11px;color:var(--ink)}
+.slot.wide.on .val{color:var(--white)}
+.slot.open{outline:3px solid var(--gold);outline-offset:1px}
+.tile{font:inherit;font-size:11px;height:22px;padding:0;cursor:grab;box-sizing:border-box;border:2px solid var(--pinkd);background:var(--pink);color:var(--white);border-radius:5px;box-shadow:inset 2px 2px 0 rgba(255,255,255,.4),inset -2px -2px 0 rgba(0,0,0,.18);white-space:nowrap;overflow:hidden;flex:none}
+.tile.sm{font-size:8px}
+.tile.picked{background:var(--gold);color:#3a2a00;border-color:#7a5c00}
+.tile.dis{background:var(--off);border-color:#8a909c;color:#5d6477;cursor:not-allowed;box-shadow:none}
+.base{background:#9aa1b2;border:2px solid var(--mute);border-radius:10px;box-shadow:inset 0 -4px 0 rgba(0,0,0,.18);box-sizing:border-box}
+.sw{display:flex;align-items:center;gap:8px;background:none;border:0;padding:0;font:inherit;font-size:11px;cursor:pointer;color:inherit;white-space:nowrap}
+.sw .track{position:relative;width:46px;height:24px;border-radius:999px;display:block;background:var(--mute);box-shadow:inset 0 0 0 2px #1c2336;transition:background-color .15s}
+.sw.on .track{background:var(--pinkhi)}
+.sw .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;display:block;background:var(--white);box-shadow:inset 0 0 0 2px #1c2336;transition:transform .15s}
+.sw.on .knob{transform:translateX(22px)}
+.tstack{position:absolute;width:54px;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:4px;padding:4px 2px;border-radius:8px;border:2px solid var(--mute);background:#e8ebf2;cursor:pointer;font:inherit;color:var(--ink)}
+.tstack .track{position:relative;width:40px;height:20px;border-radius:999px;display:block;background:var(--mute);box-shadow:inset 0 0 0 2px #1c2336}
+.tstack .knob{position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;display:block;background:var(--white);box-shadow:inset 0 0 0 2px #1c2336;transition:transform .15s}
+.tstack.on .track{background:var(--pinkhi)}
+.tstack.on .knob{transform:translateX(20px)}
+.tile.hit{background:var(--gold);color:#3a2a00;border-color:#7a5c00;box-shadow:0 0 8px 2px rgba(255,207,46,.85)}
+.slot.hit{outline:3px solid var(--gold);outline-offset:1px;box-shadow:0 0 10px 3px rgba(255,207,46,.85)}
+.shell .body{fill:#eef0f4;stroke:#454c60;stroke-width:4}
+.shell .seam{fill:none;stroke:#454c60;stroke-width:2}
+.shell .wheel{fill:#c9ceda;stroke:#454c60;stroke-width:1.5}
+.shell .ink{fill:#454c60}
+
+.mock{position:absolute;left:0;top:0;width:980px;height:640px;overflow:hidden;transform-origin:0 0;background:var(--bg);outline:3px solid #3a4152;outline-offset:-3px}
+.mock .hdr{position:absolute;left:0;top:0;width:980px;height:52px;display:flex;align-items:center;gap:12px;padding:0 16px;box-sizing:border-box;background:var(--navy);color:var(--white);border-bottom:3px solid var(--navy2)}
+.mock .ttl{font-size:22px;white-space:nowrap}
+.mock .pads{display:flex;gap:4px}
+.mock .pd{font:inherit;font-size:11px;padding:5px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;background:#e8ebf2;color:var(--ink);border:2px solid var(--navy2);border-radius:6px}
+.mock .pd.act{background:var(--pinkhi);color:var(--white);border-color:#6e2a46}
+.mock .live{width:8px;height:8px;border-radius:50%;box-sizing:border-box;background:#58c23a;border:2px solid #24521a}
+.mock .live.idle{background:transparent;border:2px solid currentColor}
+.mock .sp{flex:1}
+.mock .stage{position:absolute;left:12px;top:60px;width:956px;height:336px;box-sizing:border-box;background:var(--panel);border:3px solid var(--frame);border-radius:8px}
+.mock .qcap{position:absolute;width:248px;text-align:center;font-size:11px;color:var(--ink)}
+.mock .qcap>span{display:inline-flex;align-items:center;gap:8px;height:16px;padding:0 10px;line-height:16px;border:2px solid var(--frame);border-radius:6px;background:#d4d8e2}
+.mock .qsw{position:relative;width:32px;height:16px;padding:0;border:0;background:none;cursor:pointer}
+.mock .qsw .track{position:absolute;inset:0;border-radius:999px;background:var(--mute);box-shadow:inset 0 0 0 2px #1c2336}
+.mock .qsw .knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--white);box-shadow:inset 0 0 0 2px #1c2336;transition:transform .15s}
+.mock .qsw.on .track{background:var(--pinkhi)}
+.mock .qsw.on .knob{transform:translateX(16px)}
+.mock .qcap .seg{padding:0 0 0 10px;gap:0}
+.mock .seg button{font:inherit;font-size:11px;height:16px;line-height:12px;padding:0 7px;box-sizing:border-box;cursor:pointer;border:2px solid var(--mute);background:#e8ebf2;color:var(--ink)}
+.mock .seg button:first-of-type{border-radius:4px 0 0 4px;margin-left:8px}
+.mock .seg button:last-of-type{border-radius:0 4px 4px 0;border-left:0}
+.mock .seg button[aria-pressed="true"]{background:var(--pinkhi);border-color:#6e2a46;color:var(--white)}
+.mock .qsrow{display:flex;align-items:center;gap:18px;font-size:11px;padding-bottom:10px;border-bottom:2px solid var(--off)}
+.mock .pad{position:absolute}
+.mock .pad .body{fill:#eef0f4;stroke:#454c60;stroke-width:4}
+.mock .pad .btn{fill:#c9ceda;stroke:#454c60;stroke-width:3}
+.mock .pad .sm{fill:#c9ceda;stroke:#454c60;stroke-width:2}
+.mock .pad .ink{fill:#454c60}
+.mock .pad .bk{fill:#c9ceda;stroke:#454c60;stroke-width:2;stroke-dasharray:4 3}
+.mock.off .slot,.mock.off .lines,.mock.off .pad,.mock.off .qcap{opacity:.3}
+.mock .pop{position:absolute;width:152px;height:152px;box-sizing:border-box;background:#e9ecf2;border:3px solid var(--navy2);border-radius:10px;box-shadow:0 6px 0 rgba(46,56,80,.35)}
+.mock .pal{position:absolute;left:12px;top:404px;width:956px;height:182px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:22px;background:var(--paper);border:3px solid var(--frame);border-radius:8px}
+.mock .kbd{display:flex;gap:10px;padding:8px}
+.mock .kmain,.mock .knav{display:flex;flex-direction:column;gap:3px}
+.mock .krow{display:flex;gap:3px;height:22px}
+.mock .krow.fn{margin-bottom:5px}
+.mock .gap{flex:none;display:block}
+.mock .m3s{width:229px;height:176px;flex:none;overflow:hidden}
+.mock .m3s .m3{transform:scale(.88);transform-origin:0 0}
+.mock .ftr{position:absolute;left:0;bottom:0;width:980px;height:50px;display:flex;align-items:center;gap:8px;padding:0 14px;box-sizing:border-box}
+.mock .ftr button{font:inherit;font-size:11px;cursor:pointer;padding:6px 14px;border:2px solid var(--ink);color:var(--white);border-radius:6px;box-shadow:inset 2px 2px 0 rgba(255,255,255,.3),inset -2px -2px 0 rgba(0,0,0,.2)}
+.mock .b-def,.mock .b-clr{background:#3f7f20}
+.mock .b-ok{background:#1a6fae}
+.mock .b-hist{background:#4b5a7c;display:flex;align-items:center;gap:6px}
+.mock .b-hist:disabled{opacity:.4;cursor:default}
+.mock .b-hist .flip{display:flex;transform:scaleX(-1)}
+.mock .pdw{display:flex}
+.mock .pdw.c .pd{border-top-right-radius:0;border-bottom-right-radius:0;border-right:0}
+.mock .pwr{display:flex;align-items:center;justify-content:center;width:24px;padding:0;border:2px solid var(--navy2);border-left:1px solid rgba(46,56,80,.35);border-radius:0 6px 6px 0;background:#e8ebf2;color:var(--ink);cursor:pointer}
+.mock .pdw.act .pwr{background:var(--pinkhi);color:var(--white);border-color:#6e2a46}
+.mock .pwr:hover{background:var(--red);color:var(--white)}
+.mock .b-cancel{background:#b0520f}
+.mock .note{font-size:11px;color:#2f6b1e}
+.m3{position:relative;width:260px;height:200px;flex:none}
+/* macro box: 2 x 4 tiles per page, page arrows + dots, no scrolling */
+.mock .macros{display:flex;flex-direction:column;align-items:center;gap:6px;padding:9px 10px 7px;width:160px}
+.mock .mgrid{display:grid;grid-template-columns:repeat(2,66px);grid-auto-rows:24px;gap:5px;height:111px;align-content:start}
+.mock .mt{position:relative;display:block}
+.mock .mt .tile{position:absolute;left:0;top:0;width:66px;height:24px;font-size:11px;padding-right:14px;text-overflow:ellipsis}
+.tile.mac,.slot.on.mac{background:var(--navy);border-color:var(--navy2)}
+.mock .pen{position:absolute;right:2px;top:3px;width:16px;height:18px;padding:0;border:0;border-radius:3px;background:transparent;color:#dfe5f3;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.mock .pen:hover{background:rgba(255,255,255,.22);color:var(--white)}
+.mock .mnew{width:66px;height:24px;padding:0;font:inherit;font-size:22px;line-height:1;cursor:pointer;border:2px dashed var(--navy2);border-radius:5px;background:rgba(255,255,255,.35);color:var(--navy2)}
+.mock .mnew:hover{background:rgba(255,255,255,.7)}
+.mock .mpg{display:flex;align-items:center;gap:5px;height:18px}
+.mock .mpg button{display:flex;align-items:center;justify-content:center;width:20px;height:18px;padding:0;font-size:11px;cursor:pointer;border:2px solid var(--mute);border-radius:4px;background:#e8ebf2;color:var(--ink)}
+.mock .mpg button:disabled{opacity:.35;cursor:default}
+.mock .mpg .pdot{width:8px;height:8px;padding:0;border-radius:50%;border:2px solid var(--navy2);background:transparent;box-sizing:border-box}
+.mock .mpg .pdot.on{background:var(--navy2)}
+.mock .locked{opacity:.4;pointer-events:none;filter:grayscale(.6)}
+/* macro editor: takes the controller stage while open; the keyboard below stays live */
+.mock .med{position:absolute;left:12px;top:60px;width:956px;height:336px;box-sizing:border-box;z-index:5;background:var(--paper);border:3px solid var(--navy2);border-radius:8px;display:flex;flex-direction:column}
+.mock .mhd{display:flex;align-items:center;gap:12px;height:48px;padding:0 12px;box-sizing:border-box;background:var(--navy);color:var(--white);border-radius:4px 4px 0 0}
+.mock .mname{font:inherit;font-size:22px;width:150px;padding:4px 8px;border:2px solid var(--navy2);border-radius:6px;background:#f6f7fa;color:var(--ink)}
+.mock .mname:focus-visible,.mock .num:focus-visible,.mock .rng:focus-visible{outline:3px solid var(--gold);outline-offset:1px}
+.mock .mbtn{font:inherit;font-size:11px;height:30px;padding:0 14px;cursor:pointer;border:2px solid var(--ink);border-radius:6px;color:var(--white);display:flex;align-items:center;gap:6px;box-shadow:inset 2px 2px 0 rgba(255,255,255,.3),inset -2px -2px 0 rgba(0,0,0,.2)}
+.mock .mbtn.ok{background:#1a6fae}
+.mock .mbtn.del{background:#8f2a33;padding:0 9px}
+.mock .tl{position:relative;flex:1;display:flex;flex-wrap:wrap;align-content:flex-start;gap:10px 6px;padding:14px;overflow:hidden}
+.mock .st{position:relative;width:58px;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:grab}
+.mock .st.drop-before::before{content:"";position:absolute;left:-5px;top:0;width:4px;height:46px;border-radius:2px;background:var(--gold)}
+.mock .cap{position:relative;width:46px;height:46px;padding:0;font:inherit;cursor:pointer;border-radius:7px;display:flex;align-items:center;justify-content:center;box-sizing:border-box}
+.mock .cap .k{font-size:11px;white-space:nowrap}
+.mock .cap .ar{position:absolute;right:2px;bottom:1px;font-size:11px;line-height:1}
+.mock .cap.down{background:var(--pink);color:var(--white);border:2px solid var(--pinkd);box-shadow:inset 2px 3px 0 rgba(0,0,0,.25)}
+.mock .cap.up{background:#f6f7fa;color:var(--pinkd);border:2px solid var(--pink);box-shadow:inset 2px 2px 0 rgba(255,255,255,.6),inset -2px -3px 0 rgba(0,0,0,.14)}
+.mock .cap.ghost{border:2px dashed var(--mute);background:transparent;color:var(--mute);font-size:22px;cursor:default}
+.mock .tl.over .cap.ghost{border-color:var(--gold);background:rgba(255,207,46,.25)}
+.mock .dl{font:inherit;font-size:11px;height:18px;padding:0 5px;display:flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;border:2px solid var(--frame);border-radius:999px;background:#d4d8e2;color:var(--ink)}
+.mock .dl.bad{border-color:var(--red);background:#f7d9d9;color:#8f1c22}
+.mock .dpop{position:absolute;left:-14px;top:74px;z-index:3;width:120px;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;gap:6px;background:#f6f7fa;border:3px solid var(--navy2);border-radius:8px;box-shadow:0 4px 0 rgba(46,56,80,.35);cursor:default}
+.mock .dpop .row{display:flex;align-items:center;gap:4px;font-size:11px}
+.mock .num{font:inherit;font-size:11px;width:44px;padding:2px 4px;box-sizing:border-box;border:2px solid var(--mute);border-radius:5px;background:var(--white);color:var(--ink)}
+.mock .num[aria-invalid="true"]{border-color:var(--red);background:#fbe5e5}
+.mock .empty{position:absolute;inset:60px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--mute);font-size:11px;pointer-events:none}
+/* settings window */
+.mock .ovl{position:absolute;inset:0;z-index:20;background:rgba(46,56,80,.45);display:flex;align-items:center;justify-content:center}
+.mock .setw{width:640px;height:460px;box-sizing:border-box;display:flex;flex-direction:column;background:var(--paper);border:3px solid var(--navy2);border-radius:10px;box-shadow:0 6px 0 rgba(46,56,80,.4)}
+.mock .whd{display:flex;align-items:center;gap:10px;height:44px;padding:0 10px 0 14px;flex:none;background:var(--navy);color:var(--white);border-radius:6px 6px 0 0}
+.mock .whd h2{font-size:22px;font-weight:400;margin:0}
+.mock .x{display:flex;align-items:center;justify-content:center;width:30px;height:28px;padding:0;font:inherit;font-size:11px;cursor:pointer;border:2px solid var(--navy2);border-radius:6px;background:#e8ebf2;color:var(--ink)}
+.mock .wbody{flex:1;display:flex;min-height:0}
+.mock .stabs{width:112px;flex:none;display:flex;flex-direction:column;gap:6px;padding:14px 10px;box-sizing:border-box;border-right:2px solid var(--off)}
+.mock .stabs button{font:inherit;font-size:11px;height:34px;cursor:pointer;border:2px solid var(--mute);border-radius:6px;background:#e8ebf2;color:var(--ink);display:flex;align-items:center;gap:6px;padding:0 8px}
+.mock .stabs button[aria-pressed="true"]{background:var(--pinkhi);border-color:#6e2a46;color:var(--white)}
+.mock .spane{flex:1;padding:16px 18px;box-sizing:border-box;display:flex;flex-direction:column;gap:14px;min-width:0}
+.mock .srow{display:grid;grid-template-columns:52px 1fr 54px;align-items:center;gap:12px}
+.mock .srow .lbl{grid-column:2;font-size:11px;margin-bottom:-6px}
+.mock .srow svg{grid-row:1 / span 2}
+.mock .srow .rng{grid-column:2}
+.mock .srow output{grid-column:3;grid-row:1 / span 2;font-size:11px;text-align:right}
+.mock .rng{-webkit-appearance:none;appearance:none;width:100%;height:12px;margin:0;background:transparent;cursor:pointer}
+.mock .rng::-webkit-slider-runnable-track{height:10px;border-radius:5px;background:var(--off);border:2px solid var(--mute)}
+.mock .rng::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:22px;margin-top:-8px;border-radius:5px;background:var(--pink);border:2px solid var(--pinkd)}
+.mock .rng::-moz-range-track{height:8px;border-radius:5px;background:var(--off);border:2px solid var(--mute)}
+.mock .rng::-moz-range-thumb{width:16px;height:20px;border-radius:5px;background:var(--pink);border:2px solid var(--pinkd)}
+.mock .agrid{display:grid;grid-template-columns:1fr 1fr;gap:10px 22px}
+.mock .af{display:flex;flex-direction:column;gap:4px;font-size:11px}
+.mock .af .pair{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--mute)}
+.mock .af .num{width:62px}
+.mock .ahd{grid-column:1 / -1;font-size:11px;color:var(--mute);border-bottom:2px solid var(--off);padding-bottom:2px;margin-top:2px}
+.mock .sw.lt{font-size:11px;color:var(--ink)}
+.mock .wft{display:flex;align-items:center;gap:8px;height:52px;padding:0 14px;flex:none;border-top:2px solid var(--off)}
+.mock .wft button{font:inherit;font-size:11px;cursor:pointer;padding:6px 16px;border:2px solid var(--ink);color:var(--white);border-radius:6px;box-shadow:inset 2px 2px 0 rgba(255,255,255,.3),inset -2px -2px 0 rgba(0,0,0,.2)}
+.mock .err{font-size:11px;color:#8f1c22}
+.mock .gear{width:34px;height:30px;padding:0;cursor:pointer;display:flex;align-items:center;justify-content:center;border:2px solid var(--navy2);border-radius:6px;background:#e8ebf2;color:var(--ink)}
+.mock #calbox{display:flex;flex-direction:column;gap:12px}
+.mock .calrow{display:flex;gap:14px;align-items:flex-start}
+.mock .calfig{margin:0;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px}
+.mock .calfig figcaption{display:flex;flex-direction:column;align-items:center;gap:4px}
+.mock .calfig figcaption span{color:var(--mute)}
+.mock .stk{cursor:grab;touch-action:none}
+.mock .tpad{cursor:crosshair}
+.mock .calbar{display:flex;align-items:center;gap:8px;padding:8px 10px;border:2px solid var(--off);border-radius:8px;background:#f6f7fa;font-size:11px;min-height:46px;box-sizing:border-box}
+.mock .calstep{line-height:1.5}
+.mock .mini{font:inherit;font-size:11px;height:24px;padding:0 10px;cursor:pointer;border:2px solid var(--navy2);border-radius:6px;background:#e8ebf2;color:var(--ink);white-space:nowrap}
+.mock .mini.go{background:var(--pinkhi);border-color:#6e2a46;color:var(--white)}
+.mock .mini:disabled{opacity:.45;cursor:default}
+.mock .tpmini{display:inline-flex;margin-left:8px;vertical-align:middle}
+.mock .cfgbox{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:2px solid var(--off);border-radius:8px;background:#f6f7fa}
+.mock .cfgl{font-size:11px;color:var(--mute)}
+.mock .cfgp{font-family:inherit;font-size:11px;word-break:break-all;color:var(--ink)}
+.mock .cfgbtns{display:flex;gap:8px}
+.mock .cfgbtns .mini,.mock .cfgrow .mini{display:flex;align-items:center;gap:5px}
+.mock .cfgn{font-size:11px;color:#2f6b1e}
+.mock .cfgrow{grid-column:1 / -1;display:flex;align-items:center;gap:10px}
+.mock .b-cfg{background:#4b5a7c;display:flex;align-items:center;gap:6px}
+.mock .two{display:flex;gap:18px;align-items:flex-start}
+.mock .col{display:flex;flex-direction:column;gap:12px;flex:1;min-width:0}
+.mock .tpcol{flex:0 0 200px;align-items:flex-start}
+.mock .sl{display:grid;grid-template-columns:1fr 48px;gap:4px 8px;align-items:center;font-size:11px}
+.mock .sl .lbl{grid-column:1 / -1}
+.mock .sl output{text-align:right}
+.mock .trrow{display:flex;gap:8px;align-items:center}
+.mock .trrow .sl{flex:1}
+.mock .g2{grid-template-columns:1fr;gap:8px}
+.mock .tpxy{display:flex;align-items:center;gap:6px;font-size:11px}
+.mock .tpxy .num{width:56px}
+.mock .ver{margin:0;font-size:11px;color:var(--mute);line-height:1.6}
+.mock .logbox{display:flex;flex-direction:column;gap:4px;padding:8px 10px;border:2px solid var(--off);border-radius:8px;background:#f6f7fa}
+.mock .lr{display:grid;grid-template-columns:86px 34px 1fr;gap:6px;font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden}
+.mock .lt{color:var(--mute)}
+.mock .lk{text-align:center;border-radius:3px;color:var(--white);background:var(--mute)}
+.mock .k-按下{background:var(--pink)}.mock .k-放開{background:#c3c8d2;color:var(--ink)}.mock .k-巨集{background:var(--navy)}.mock .k-連線{background:#3f7f20}.mock .k-設定{background:#b0520f}
+.mock .lx{overflow:hidden;text-overflow:ellipsis}
+.mock .logdrawer{position:absolute;left:12px;top:404px;width:956px;height:182px;box-sizing:border-box;z-index:6;background:var(--paper);border:3px solid var(--navy2);border-radius:8px;padding:6px 12px;display:flex;flex-direction:column;gap:4px}
+.mock .ldh{display:flex;align-items:center;font-size:11px}
+.mock .ldh .x{width:26px;height:22px;font-size:11px}
+.mock .about{display:flex;flex-direction:column;gap:10px;font-size:11px;line-height:1.6}
+.mock .about .big{font-size:22px}
+.m3 .tile{position:absolute;width:62px;height:24px;font-size:11px}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:none;background:var(--bg);color:var(--ink);font-family:var(--font)}
+#app{position:fixed;inset:0;overflow:hidden;background:var(--bg)}
+#board{position:absolute;left:0;top:0}
+.mock .lines{position:absolute;left:0;top:0;width:980px;height:640px;pointer-events:none;overflow:visible;z-index:3}
+.mock .m3 .lines{width:260px;height:210px;z-index:1}
