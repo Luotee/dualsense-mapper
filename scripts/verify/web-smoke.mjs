@@ -446,6 +446,76 @@ try {
   await page.click('#board [data-pad="dualsense"]');
   await settle(page);
 
+  // ── Task 7: macro box and editor ──────────────────────────────────────────
+  await page.evaluate(() => {
+    const m = window.__mock.config.macros;
+    for (const n of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9']) m[n] = { loop: false, steps: [{ key: 'z', action: 'down', delay_ms: [40, 60] }, { key: 'z', action: 'up', delay_ms: [15, 25] }] };
+    window.__mockEmit('config-changed', { source: 'watcher' });
+  });
+  await settle(page);
+  check('macro box page 1: 8 macro tiles, no ＋', (await page.locator('#board .macros .tile.mac').count()) === 8 && (await page.locator('#board .macros .mnew').count()) === 0);
+  await page.locator('#board .macros').hover();
+  await page.mouse.wheel(0, 120);
+  await settle(page);
+  check('wheel turns the macro page: 1 tile + ＋', (await page.locator('#board .macros .tile.mac').count()) === 1 && (await page.locator('#board .macros .mnew').count()) === 1);
+  await page.click('#board .macros .mnew');
+  await settle(page);
+  const nm = await lastCall(page, 'set_macro');
+  check('＋ creates 巨集 1 with no steps', nm?.args?.name === '巨集 1' && nm.args.def.steps.length === 0 && nm.args.def.loop === false, JSON.stringify(nm?.args));
+  check('the editor opens on the new macro', (await page.locator('#board .med').count()) === 1 && (await page.locator('#board .med .mname').inputValue()) === '巨集 1');
+  check('mouse and macro tiles are locked while editing', (await page.locator('#board .m3s.locked').count()) === 1 && (await page.locator('#board .macros.locked').count()) === 1);
+  await tile(page, 'A').click();
+  await settle(page);
+  const stepsA = await page.locator('#board .med .st[data-step]:not([data-step="end"])').count();
+  const pills = await page.locator('#board .med [data-act="sdelay"]').allTextContents();
+  check('a keyboard click appends a down+up pair with default delays', stepsA === 2 && pills[0].includes('40–60') && pills[1].includes('15–25'), pills.join('|'));
+  await page.click('#board .med [data-act="sdelay"][data-i="0"]');
+  await page.locator('#board .dpop [data-f="dhi"]').fill('40');
+  await page.locator('#board .dpop [data-f="dhi"]').dispatchEvent('input');
+  await page.click('#board .med .mhd .mname');
+  const before = await countCalls(page, 'set_macro');
+  await page.click('#board .med [data-act="mdone"]');
+  await settle(page);
+  check('完成 is refused while a delay has min >= max (its popover opens)', (await countCalls(page, 'set_macro')) === before &&
+    (await page.locator('#board .dpop').count()) === 1 && (await page.locator('#board .med').count()) === 1);
+  await page.locator('#board .dpop [data-f="dhi"]').fill('70');
+  await page.locator('#board .dpop [data-f="dhi"]').dispatchEvent('input');
+  await page.keyboard.press('Escape');
+  await page.locator('#board .med .mname').fill('連發');
+  await page.locator('#board .med .mname').dispatchEvent('input');
+  await page.click('#board .med [data-act="mloop"]');
+  await page.click('#board .med [data-act="mdone"]');
+  await settle(page);
+  const seq = (await calls(page)).map(c => c.cmd).filter(c => /macro/.test(c)).slice(-2);
+  const saved = await lastCall(page, 'set_macro');
+  check('rename + 完成 → rename_macro then set_macro', seq.join(',') === 'rename_macro,set_macro' &&
+    saved.args.name === '連發' && saved.args.def.loop === true && saved.args.def.steps[0].key === 'a' &&
+    JSON.stringify(saved.args.def.steps[0].delay_ms) === '[40,70]', seq.join(',') + ' ' + JSON.stringify(saved?.args));
+  check('the editor closes after 完成', (await page.locator('#board .med').count()) === 0);
+  await page.locator('#board [data-medit="連發"]').click();
+  await settle(page);
+  await page.click('#board .med [data-act="mdel"]');
+  await settle(page);
+  check('trash → delete_macro', (await lastCall(page, 'delete_macro'))?.args?.name === '連發' && (await page.locator('#board .med').count()) === 0);
+  await page.evaluate(() => {
+    const c = window.__mock.config;
+    c.macros['<b>x"y</b>'] = { loop: false, steps: [] };
+    c.pads.dualsense.buttons['0'] = { label: 'Cross', type: 'macro', value: '<b>x"y</b>' };
+    window.__mockEmit('config-changed', { source: 'watcher' });
+  });
+  await settle(page);
+  await page.click('#board .macros .mnew');
+  await settle(page);
+  await page.click('#board .med [data-act="mloop"]');
+  const nSet = await countCalls(page, 'set_macro');
+  await page.click('#board .med [data-act="mdone"]');
+  await settle(page);
+  check('完成 refuses a looping macro with no steps', (await countCalls(page, 'set_macro')) === nSet &&
+    /至少一步/.test((await page.locator('#board .med .merr').textContent()) || ''));
+  await page.click('#board .med [data-act="mdel"]');
+  await settle(page);
+  check('macro name is escaped in tile and slot', (await page.locator('#board b').count()) === 0 && (await slotText(page, '0')) === '<b>x"y</b>');
+
   // @@NEXT-TASKS
 
   const inPageErrors = await page.evaluate(() => window.__mockErrors);

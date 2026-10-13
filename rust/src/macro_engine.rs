@@ -56,6 +56,12 @@ fn run_macro(def: MacroDef, cancel: Arc<AtomicBool>, tx: Sender<KeyAction>) {
         }
     };
 
+    // No step means the cancel flag below is never checked: a looping empty
+    // macro would spin this thread forever. It sends nothing anyway.
+    if def.steps.is_empty() {
+        return;
+    }
+
     loop {
         for step in &def.steps {
             if cancel.load(Ordering::SeqCst) {
@@ -216,4 +222,22 @@ mod tests {
             "expected no further Press Left after cancel, got {after:?}"
         );
     }
+
+    #[test]
+    fn empty_looping_macro_returns_instead_of_spinning() {
+        // A macro saved with no steps and `loop: true` (the board's ＋ then
+        // 按住時重複) must not busy-loop: with no step, the cancel flag is
+        // never checked, so the thread could never be stopped.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let def = MacroDef { repeat: true, steps: vec![] };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            run_macro(def, cancel, tx);
+            let _ = done_tx.send(());
+        });
+        assert!(done_rx.recv_timeout(Duration::from_millis(500)).is_ok(), "run_macro spun on an empty looping macro");
+        assert!(rx.try_recv().is_err(), "an empty macro sends nothing");
+    }
 }
+

@@ -229,3 +229,4 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:no
 #board{position:absolute;left:0;top:0}
 .mock .lines{position:absolute;left:0;top:0;width:980px;height:640px;pointer-events:none;overflow:visible;z-index:3}
 .mock .m3 .lines{width:260px;height:210px;z-index:1}
+.mock .med .merr{color:#8f1c22;font-size:11px;margin-right:6px;white-space:nowrap}
