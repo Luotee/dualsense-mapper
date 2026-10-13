@@ -19,9 +19,9 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "dualsense-mapper", version, about)]
+#[command(name = "PadToKBM", version, about)]
 struct Cli {
-    /// Path to config.json. Defaults to <exe_dir>/dualsense-mapper.json.
+    /// Path to config.json. Defaults to <exe_dir>/padtokbm.json.
     #[arg(long)]
     config: Option<PathBuf>,
 
@@ -119,7 +119,7 @@ fn show_fatal_dialog(msg: &str) {
     use std::iter::once;
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
     let body: Vec<u16> = msg.encode_utf16().chain(once(0)).collect();
-    let title: Vec<u16> = "DualSense Mapper — Error"
+    let title: Vec<u16> = "PadToKBM — Error"
         .encode_utf16()
         .chain(once(0))
         .collect();
@@ -220,7 +220,7 @@ fn real_main(cli: &Cli) -> Result<()> {
 
 fn print_banner(cfg_path: &std::path::Path, dry_run: bool, just_wrote_default: bool) {
     println!("=================================================");
-    println!(" DualSense Mapper v{}", env!("CARGO_PKG_VERSION"));
+    println!(" PadToKBM v{}", env!("CARGO_PKG_VERSION"));
     println!(" Config: {}", cfg_path.display());
     if dry_run {
         println!(" Mode:   DRY-RUN (no real keystrokes sent)");
@@ -249,11 +249,14 @@ fn pause_on_error() {
 
 fn resolve_config_path(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
     if let Some(p) = explicit { return Ok(p.to_path_buf()); }
-    // Portable layout: config sits next to the executable as dualsense-mapper.json.
-    // Drop the folder, move it elsewhere, the config follows.
+    // Portable layout: config sits next to the executable as padtokbm.json.
+    // Drop the folder, move it elsewhere, the config follows. A pre-v3.1.0
+    // dualsense-mapper.json there is adopted (renamed, .bak kept).
     let exe = std::env::current_exe().context("could not determine executable path")?;
     let dir = exe.parent().context("executable has no parent directory")?;
-    Ok(dir.join("dualsense-mapper.json"))
+    let (path, adoption) = dualsense_mapper::file_names::default_config_path(dir);
+    dualsense_mapper::file_names::log_adoption(&adoption);
+    Ok(path)
 }
 
 fn first_run_copy(target: &std::path::Path) -> Result<()> {

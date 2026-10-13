@@ -901,7 +901,7 @@ pub fn get_controller_status(
 /// Tauri command: load UI preferences from disk (drawer state, last tab, etc.).
 ///
 /// Returns default prefs if the file is missing or corrupt — never an error.
-/// Spec §11: ui-prefs live at `<exe-dir>/dualsense-mapper.ui.json`.
+/// Spec §11: ui-prefs live at `<exe-dir>/padtokbm.ui.json`.
 #[cfg(feature = "gui")]
 #[tauri::command]
 pub fn get_ui_prefs(

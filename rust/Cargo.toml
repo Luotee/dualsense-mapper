@@ -1,13 +1,13 @@
 [package]
 name = "dualsense-mapper"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Map PS5 DualSense buttons and analog inputs to keyboard keys."
+description = "Map gamepad buttons and analog inputs to keyboard and mouse."
 license = "MIT"
 
 [[bin]]
-name = "dualsense-mapper"
+name = "PadToKBM"
 path = "src/main.rs"
 
 [lib]

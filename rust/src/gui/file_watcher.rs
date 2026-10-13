@@ -1,4 +1,4 @@
-//! Filesystem watcher for `dualsense-mapper.json`. When the user edits the
+//! Filesystem watcher for `padtokbm.json`. When the user edits the
 //! config in an external editor (Notepad, VSCode, etc.), notify-rs fires;
 //! we debounce 250ms (some editors save by writing the file 3+ times in
 //! a row) and emit a single `()` to the consumer, who reloads via

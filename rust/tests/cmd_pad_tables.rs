@@ -35,7 +35,7 @@ impl Fixture {
 fn fixture() -> Fixture {
     let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dualsense-mapper.json");
+    let path = dir.path().join("padtokbm.json");
     std::fs::copy(&example, &path).unwrap();
     let engine = Engine::spawn_with_fake_gamepad(Config::load_from_path(&path).unwrap()).unwrap();
     Fixture { _dir: dir, path, engine }
@@ -176,7 +176,7 @@ fn writes_keep_help_fields() {
 #[test]
 fn config_folder_is_the_parent_directory() {
     use dualsense_mapper::gui::commands::config_folder;
-    let p = std::path::Path::new("/tmp/x/dualsense-mapper.json");
+    let p = std::path::Path::new("/tmp/x/padtokbm.json");
     assert_eq!(config_folder(p), std::path::PathBuf::from("/tmp/x"));
-    assert_eq!(config_folder(std::path::Path::new("dualsense-mapper.json")), std::path::PathBuf::from("."));
+    assert_eq!(config_folder(std::path::Path::new("padtokbm.json")), std::path::PathBuf::from("."));
 }

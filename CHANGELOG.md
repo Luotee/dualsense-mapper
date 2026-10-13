@@ -3,6 +3,34 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-10-13
+
+### Changed
+
+- The app is now called **PadToKBM** (Chinese name 手把轉鍵鼠); it was
+  DualSense Mapper. The exe is `PadToKBM.exe`, the window title is
+  `PadToKBM`, and the settings window shows `PadToKBM 手把轉鍵鼠 v3.1.0`.
+  The GitHub repository moved to `Luotee/pad-to-kbm` (old links redirect).
+- The files beside the exe are `padtokbm.json` and `padtokbm.ui.json`.
+- New app and tray icons: the DualSense from the key-binding board. The
+  tray icon is in colour while a controller is connected and grey without one.
+- One README, in Chinese (`README.md`), in the shape of a quick start + FAQ;
+  `README.zh-TW.md` and the outdated `rust/README.md` are gone (the
+  anti-cheat rules moved to `CLAUDE.md`).
+- Font tooling for contributors: `python3 scripts/build-font.py` fetches its
+  pinned venv and Cubic 11 v1.500 itself (`scripts/font_tools.py`).
+
+### Migration
+
+- On the first start, `PadToKBM.exe` renames a `dualsense-mapper.json`
+  (and `dualsense-mapper.ui.json`) found next to it to the new name and
+  keeps a `dualsense-mapper.json.bak` copy. Your bindings carry over;
+  nothing to do. If the folder is read-only, the old file is used where it is.
+- Delete the old `dualsense-mapper.exe`. While it runs, `PadToKBM.exe`
+  only brings the old window to the front (they share one instance).
+- To go back to v3.0.0, rename `padtokbm.json` back to
+  `dualsense-mapper.json` (v3.0.0 does not read the new name).
+
 ## [3.0.0] - 2026-10-13
 
 ### Added

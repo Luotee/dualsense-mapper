@@ -1,6 +1,7 @@
 pub mod config;
 pub mod config_io;
 pub mod engine;
+pub mod file_names;
 pub mod gamepad;
 pub mod gui;
 pub mod keyboard;

@@ -142,7 +142,7 @@ function tauriMock({ config, version }) {
       case 'get_ui_prefs': return clone(state.prefs);
       case 'set_ui_prefs': state.prefs = clone(a.prefs); return null;
       case 'get_app_version': return version;
-      case 'get_config_path': return 'D:\\Games\\dualsense-mapper\\dualsense-mapper.json';
+      case 'get_config_path': return 'D:\\Games\\PadToKBM\\padtokbm.json';
       case 'get_stick_positions': return state.sticks ? clone(state.sticks) : null;
       case 'set_binding': put(a.pad, a.page, a.id, a.entry); changed(); return null;
       case 'swap_bindings': {
@@ -538,7 +538,8 @@ try {
   check('gear opens the settings window', (await page.locator('#board .setw').count()) === 1);
   const tabs = await page.locator('#board .stabs [data-stab]').allTextContents();
   check('four tabs 一般/搖桿/觸控板/按鍵', JSON.stringify(tabs.map(t => t.trim())) === '["一般","搖桿","觸控板","按鍵"]', tabs.join('|'));
-  check('一般 shows the config path and both open buttons', /dualsense-mapper\.json/.test(await page.locator('#board .cfgp').textContent()) &&
+  check('settings version line names PadToKBM 手把轉鍵鼠', /^PadToKBM 手把轉鍵鼠 v/.test(((await page.locator('#board .ver').textContent()) || '').trim()), await page.locator('#board .ver').textContent());
+  check('一般 shows the config path and both open buttons', /padtokbm\.json/.test(await page.locator('#board .cfgp').textContent()) &&
     (await page.locator('#board [data-act="opencfg"]').count()) === 1 && (await page.locator('#board [data-act="opendir"]').count()) === 1);
   await page.click('#board [data-act="opencfg"]');
   await page.click('#board [data-act="opendir"]');

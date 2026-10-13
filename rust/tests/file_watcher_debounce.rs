@@ -32,7 +32,7 @@ fn collect_in_background(
 
 fn watched_file() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("dualsense-mapper.json");
+    let path = dir.path().join("padtokbm.json");
     std::fs::write(&path, "{\"v\":0}").unwrap();
     (dir, path)
 }

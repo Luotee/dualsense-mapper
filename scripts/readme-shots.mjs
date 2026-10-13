@@ -90,7 +90,7 @@ function tauriMock({ config, version }) {
       case 'get_config': return clone(config);
       case 'get_ui_prefs': return { last_pad: 'dualsense' };
       case 'get_app_version': return version;
-      case 'get_config_path': return 'D:\\Games\\dualsense-mapper\\dualsense-mapper.json';
+      case 'get_config_path': return 'D:\\Games\\PadToKBM\\padtokbm.json';
       default: return null;
     }
   }

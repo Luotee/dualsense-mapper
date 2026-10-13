@@ -1,4 +1,12 @@
-# dualsense-mapper — Contributor Guidelines
+# PadToKBM — Contributor Guidelines
+
+PadToKBM was called DualSense Mapper until v3.1.0. Names deliberately kept
+from then: the Rust crate / lib (`dualsense-mapper` / `dualsense_mapper`,
+never shown to users), the Tauri `identifier` `com.luotee.dualsense-mapper`
+(changing it moves the WebView2 user-data dir and the single-instance key),
+and the legacy file names `file_names.rs` adopts on first start
+(`dualsense-mapper.json` / `.ui.json` → `padtokbm.json` / `.ui.json`, `.bak`
+kept). Only the `[[bin]]` name (`PadToKBM.exe`) and visible strings changed.
 
 ## If You Are an AI Agent
 
@@ -59,7 +67,7 @@ There are TWO build profiles. Pick the right one:
 ```bash
 cd rust
 cargo build --release --target x86_64-pc-windows-gnu
-# → target/x86_64-pc-windows-gnu/release/dualsense-mapper.exe  (~2 MB)
+# → target/x86_64-pc-windows-gnu/release/PadToKBM.exe  (~2 MB)
 ```
 
 This builds the `--cli` path WITHOUT the Tauri GUI feature. The exe is
@@ -73,7 +81,7 @@ verifying the CLI engine compiles cleanly.
 cd rust
 WEBVIEW2_STATIC=true cargo xwin build --release \
   --target x86_64-pc-windows-msvc --features gui
-# → target/x86_64-pc-windows-msvc/release/dualsense-mapper.exe  (~11 MB)
+# → target/x86_64-pc-windows-msvc/release/PadToKBM.exe  (~11 MB)
 ```
 
 This is the ONLY exe to deliver to the user.
@@ -90,7 +98,7 @@ This is the ONLY exe to deliver to the user.
 - Targeting `windows-msvc` (not `windows-gnu`) avoids shipping
   `libgcc_s_seh-1.dll`, `libstdc++-6.dll`, `libwinpthread-1.dll`.
 
-The Windows binary needs **only the exe + a `dualsense-mapper.json`
+The Windows binary needs **only the exe + a `padtokbm.json`
 config next to it**. No DLLs. Ship those two files; everything else
 is dev artefacts.
 
@@ -100,19 +108,20 @@ After every fresh GUI build the user wants for testing, copy ONLY the
 exe to a versioned folder under the Windows-visible Downloads path:
 
 ```bash
-DEST="/mnt/c/Users/Joe96/Downloads/dualsense-mapper-vX.Y.Z-<tag>"
+DEST="/mnt/c/Users/Joe96/Downloads/PadToKBM-vX.Y.Z-<tag>"
 mkdir -p "$DEST"
-cp rust/target/x86_64-pc-windows-msvc/release/dualsense-mapper.exe "$DEST/"
+cp rust/target/x86_64-pc-windows-msvc/release/PadToKBM.exe "$DEST/"
 ```
 
 **Do NOT bundle `config.example.json`.** The exe auto-generates a
-fresh `dualsense-mapper.json` next to itself on first run (see
+fresh `padtokbm.json` next to itself on first run (see
 `Config::load_or_create`). Copying an extra example file is redundant
 and gives the user two configs to reason about.
 
 `<tag>` is one of: `test` (final), `dev-test` (pre-release dev build),
 or a feature name like `silhouette-test`. The folder pattern matches
-prior releases (`dualsense-mapper-v2.1.0-test/`, etc.) so the user
+prior releases (`PadToKBM-v3.1.0-test/`; before the rename
+`dualsense-mapper-v2.1.0-test/`, etc.) so the user
 can find it by version. Do NOT skip this step when finishing a
 feature — the user expects the exe in Downloads, not just a
 SendUserFile attachment.
@@ -172,6 +181,9 @@ What a PASS requires, captured as evidence:
   `${XDG_CACHE_HOME:-~/.cache}/pad-to-kbm-tools/`; nothing to install by hand.
 - Screenshot `rust/target/verify/web-main.png`; README pictures come from
   `scripts/readme-shots.mjs`.
+- The app and tray icons (`rust/icons/*.ico`) are rendered from the
+  board's DualSense art by `scripts/build-icons.mjs` (previews in
+  `rust/target/icons-preview/`); re-run it when `padart.js` changes.
 
 For scroll / layout bugs, measure don't eyeball: the board is a fixed
 980×640 surface scaled to the window (`app.js`); at several viewport
@@ -190,12 +202,16 @@ non-zero on any FAIL. Logs: `rust/target/verify/<layer>.log`.
 |---|---|
 | `linux` | `cargo test`, all suites, on the Linux dev host |
 | `windows-tests` | `cargo xwin test --no-run` (MSVC target); every test exe runs natively on Windows via WSL interop |
-| `gui-smoke` | GUI exe build; launched alone (`--dry-run`) from a fresh `%LOCALAPPDATA%\Temp` dir: titled window up, first-run `dualsense-mapper.json` written, survives a valid and an invalid config hot-edit; killed by PID, temp dir removed. SKIPs if the user's copy is running |
+| `gui-smoke` | GUI exe build; launched alone (`--dry-run`) from a fresh `%LOCALAPPDATA%\Temp` dir: titled window up, first-run `padtokbm.json` written, survives a valid and an invalid config hot-edit; a second launch beside a pre-v3.1.0 `dualsense-mapper.json` must adopt it byte for byte (`.bak` kept); killed by PID, temp dirs removed. SKIPs if the user's copy (new or old exe name) is running |
 | `web` | the click-through recipe above, automated: `scripts/verify/web-smoke.mjs` (Playwright + cached Chromium, mocked `__TAURI__`); screenshots in `rust/target/verify/` |
 
 Flags: `--quick` (linux + windows-tests), `--skip-gui`, `--skip-web`,
 `--only <layer>`. Toolchain paths come from the untracked
-`~/.config/dualsense-mapper/verify-env.sh`; a missing tool turns its
+`~/.config/pad-to-kbm/verify-env.sh` (falls back to the pre-rename
+`~/.config/dualsense-mapper/verify-env.sh`); it holds machine-local paths
+only and never goes in the repo. The layers need cargo, cargo-xwin with
+clang-cl / llvm-lib, libudev (pkg-config), node and a cached Playwright
+Chromium. A missing tool turns its
 layer into SKIP with a hint (missing cargo FAILs `linux`).
 
 - The agent runs `scripts/verify.sh` (all layers) before every release
@@ -283,7 +299,7 @@ regresses real, observed bugs the codebase already fixed once:
      before reaching the main loop. Any uncaught error from `main`
      must pause (read stdin) before exit, so the error is visible.
      `--no-pause` is the explicit opt-out for CI use.
-   - The first-run-written `dualsense-mapper.json` carries an inline
+   - The first-run-written `padtokbm.json` carries an inline
      keyboard cheat sheet in `_help` and `_keyboard_keys` fields so
      a user editing the file in Notepad has the reference inline.
      `serde` ignores unknown fields, so these are documentation
@@ -327,10 +343,19 @@ regresses real, observed bugs the codebase already fixed once:
 
 This tool is not a cheat — it remaps physical inputs to keyboard
 inputs. The synthesis pipeline avoids fixed-period patterns so it
-doesn't get misclassified as one. The rules are listed in
-`rust/README.md` § Anti-cheat self-discipline and enforced
-mechanically by config validation + the iron rules above. Do not
-ship a feature that requires bypassing them.
+doesn't get misclassified as one. The rules (the user-facing summary
+is the README FAQ「會不會被當成外掛？」):
+
+- Macro step delays are always `[min, max]` ranges, never constants.
+- Synthesized keys honor `min_press_ms` (randomized minimum down/up gap).
+- Simultaneous events on the same gamepad tick are spread by `tick_jitter_ms`.
+- No process hooking, DLL injection, or driver (the ViGEmBus exception
+  in iron rule 7 aside). User-mode `SendInput` / `CGEvent` only.
+- `log_events: true` writes every synthesized event with a timestamp
+  so the user can self-audit.
+
+They are enforced mechanically by config validation + the iron rules
+above. Do not ship a feature that requires bypassing them.
 
 Note: **`SendInput` does not trigger Windows OS auto-repeat.** This is
 expected — auto-repeat is a kbdclass-driver-level feature for real
@@ -349,7 +374,7 @@ release-flow bug; halt and reclassify before committing.
 - **MAJOR (`X.0.0`)** — backwards-incompatible behaviour. Examples:
   - Dropping support for a previously-supported pad (e.g. v2.0.0
     removes gilrs → non-DualSense pads no longer work).
-  - Breaking the on-disk `dualsense-mapper.json` schema (renamed
+  - Breaking the on-disk `padtokbm.json` schema (renamed
     fields, removed keys, changed enum values).
   - Removing or renaming a CLI flag.
   - Changing the semantics of an existing binding type (e.g. if
@@ -396,10 +421,10 @@ git tag -a vX.Y.Z -m "Release vX.Y.Z" <merge-commit-sha>
 git push origin vX.Y.Z
 ```
 
-Then attach the GUI `dualsense-mapper.exe` (the WebView2-static MSVC
-build above) + a sample `dualsense-mapper.json` as the GitHub Release
+Then attach the GUI `PadToKBM.exe` (the WebView2-static MSVC
+build above) + a sample `padtokbm.json` as the GitHub Release
 artefact (`gh release create vX.Y.Z
-rust/target/x86_64-pc-windows-msvc/release/dualsense-mapper.exe
+rust/target/x86_64-pc-windows-msvc/release/PadToKBM.exe
 rust/config.example.json --title "vX.Y.Z" --notes-file <changelog section>
 --latest`).
 

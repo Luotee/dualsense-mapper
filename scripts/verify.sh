@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/verify.sh — release self-verification for dualsense-mapper.
+# scripts/verify.sh — release self-verification for PadToKBM.
 #
 # Layers (run in this order):
 #   linux          cargo test (all suites) on the Linux dev host
@@ -25,7 +25,11 @@
 set -uo pipefail
 
 # Machine-local toolchain env (cargo, libudev, clang-cl / llvm-lib paths).
-VERIFY_ENV_FILE="$HOME/.config/dualsense-mapper/verify-env.sh"
+# Read from the first of these that exists (the second is the pre-rename path).
+for VERIFY_ENV_FILE in "$HOME/.config/pad-to-kbm/verify-env.sh" \
+                       "$HOME/.config/dualsense-mapper/verify-env.sh"; do
+    [ -f "$VERIFY_ENV_FILE" ] && break
+done
 if [ -f "$VERIFY_ENV_FILE" ]; then
     # shellcheck source=/dev/null
     . "$VERIFY_ENV_FILE"
@@ -35,7 +39,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUST_DIR="$REPO_ROOT/rust"
 VERIFY_DIR="$RUST_DIR/target/verify"
 WIN_TARGET="x86_64-pc-windows-msvc"
-GUI_EXE_NAME="dualsense-mapper.exe"
+GUI_EXE_NAME="PadToKBM.exe"
+# Pre-v3.1.0 name: same Tauri identifier, so a running copy swallows our launch.
+LEGACY_EXE_NAME="dualsense-mapper.exe"
+CONFIG_NAME="padtokbm.json"
+LEGACY_CONFIG_NAME="dualsense-mapper.json"
 GUI_STARTUP_TIMEOUT_S=8
 GUI_HOTEDIT_WAIT_S=3
 PLAYWRIGHT_CORE_VER="1.63.0"
@@ -280,6 +288,49 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
+# Launch the exe in a fresh temp dir that holds a pre-v3.1.0 dualsense-mapper.json
+# (the example config with one binding changed). Expect it renamed to
+# padtokbm.json byte for byte, a .bak copy beside it, the old name gone.
+gui_legacy_adoption() {
+    local exe="$1" localappdata="$2" stamp win_dir seed deadline
+    stamp="$(date +%Y%m%d-%H%M%S)-$$-legacy"
+    win_dir="$localappdata\\Temp\\dsm-verify-$stamp"
+    GUI_TMP_LINUX="$(wslpath -u "$win_dir")"
+    mkdir -p "$GUI_TMP_LINUX"
+    cp "$exe" "$GUI_TMP_LINUX/"
+    seed="$GUI_TMP_LINUX/$LEGACY_CONFIG_NAME.seed"
+    python3 - "$RUST_DIR/config.example.json" "$seed" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+cfg["pads"]["dualsense"]["buttons"]["0"]["value"] = "F9"
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+    cp "$seed" "$GUI_TMP_LINUX/$LEGACY_CONFIG_NAME"
+    GUI_PID="$(win_ps "(Start-Process -FilePath '$win_dir\\$GUI_EXE_NAME' -ArgumentList '--dry-run' -WorkingDirectory '$win_dir' -PassThru).Id")"
+    if ! [[ "$GUI_PID" =~ ^[0-9]+$ ]]; then
+        GUI_PID=""; gui_cleanup; LEGACY_MSG="could not launch the exe"; return 1
+    fi
+    deadline=$((SECONDS + GUI_STARTUP_TIMEOUT_S))
+    while [ "$SECONDS" -lt "$deadline" ] && [ ! -f "$GUI_TMP_LINUX/$CONFIG_NAME" ]; do
+        sleep 0.5
+    done
+    sleep 1
+    if [ ! -f "$GUI_TMP_LINUX/$CONFIG_NAME" ]; then
+        gui_cleanup; LEGACY_MSG="$CONFIG_NAME not created from $LEGACY_CONFIG_NAME"; return 1
+    fi
+    if ! cmp -s "$seed" "$GUI_TMP_LINUX/$CONFIG_NAME"; then
+        gui_cleanup; LEGACY_MSG="$CONFIG_NAME differs from the old $LEGACY_CONFIG_NAME"; return 1
+    fi
+    if [ ! -f "$GUI_TMP_LINUX/$LEGACY_CONFIG_NAME.bak" ] || [ -f "$GUI_TMP_LINUX/$LEGACY_CONFIG_NAME" ]; then
+        gui_cleanup; LEGACY_MSG="expected $LEGACY_CONFIG_NAME.bak and no $LEGACY_CONFIG_NAME"; return 1
+    fi
+    if ! gui_alive "$GUI_PID"; then
+        GUI_PID=""; gui_cleanup; LEGACY_MSG="process exited after adopting the old config"; return 1
+    fi
+    gui_cleanup
+    LEGACY_MSG="old $LEGACY_CONFIG_NAME adopted"
+}
+
 layer_gui_smoke() {
     local log hint rc exe running localappdata stamp win_dir win_exe cfg
     local title="" deadline msg
@@ -307,12 +358,15 @@ layer_gui_smoke() {
         return
     fi
 
-    running="$(win_run tasklist.exe /FI "IMAGENAME eq $GUI_EXE_NAME" /NH)"
-    if echo "$running" | grep -i "$GUI_EXE_NAME" >/dev/null; then
-        echo "$running" >>"$log"
-        record gui-smoke SKIP "built OK; $GUI_EXE_NAME already running on Windows — single-instance would just focus it (close it and re-run)"
-        return
-    fi
+    local name
+    for name in "$GUI_EXE_NAME" "$LEGACY_EXE_NAME"; do
+        running="$(win_run tasklist.exe /FI "IMAGENAME eq $name" /NH)"
+        if echo "$running" | grep -i "$name" >/dev/null; then
+            echo "$running" >>"$log"
+            record gui-smoke SKIP "built OK; $name already running on Windows — single-instance would just focus it (close it and re-run)"
+            return
+        fi
+    done
 
     localappdata="$(win_cmd echo %LOCALAPPDATA%)"
     stamp="$(date +%Y%m%d-%H%M%S)-$$"
@@ -321,7 +375,7 @@ layer_gui_smoke() {
     mkdir -p "$GUI_TMP_LINUX"
     cp "$exe" "$GUI_TMP_LINUX/"
     win_exe="$win_dir\\$GUI_EXE_NAME"
-    cfg="$GUI_TMP_LINUX/dualsense-mapper.json"
+    cfg="$GUI_TMP_LINUX/$CONFIG_NAME"
     echo "=== launch $win_exe (cwd $win_dir)" >>"$log"
 
     # --dry-run: the window, config and watcher paths are identical, but a
@@ -362,7 +416,7 @@ layer_gui_smoke() {
     fi
     if [ ! -f "$cfg" ]; then
         gui_cleanup
-        record gui-smoke FAIL "dualsense-mapper.json not auto-generated next to the exe"
+        record gui-smoke FAIL "$CONFIG_NAME not auto-generated next to the exe"
         return
     fi
     if ! msg="$(gui_check_config "$cfg" 2>&1)"; then
@@ -393,7 +447,17 @@ layer_gui_smoke() {
     fi
 
     gui_cleanup
-    record gui-smoke PASS "window '$title'; first-run config OK; survived valid + invalid hot-edit"
+
+    # Upgrade from a pre-v3.1.0 folder: the old config must be adopted as is.
+    # (runs in this shell, not $(...), so the exit trap still sees GUI_PID)
+    LEGACY_MSG=""
+    echo "=== launch with a pre-v3.1.0 $LEGACY_CONFIG_NAME" >>"$log"
+    if ! gui_legacy_adoption "$exe" "$localappdata" >>"$log" 2>&1; then
+        echo "legacy adoption: $LEGACY_MSG" >>"$log"
+        record gui-smoke FAIL "legacy config: $LEGACY_MSG"
+        return
+    fi
+    record gui-smoke PASS "window '$title'; first-run config OK; survived valid + invalid hot-edit; $LEGACY_MSG"
 }
 
 # ─── Layer: web ──────────────────────────────────────────────────────────────
@@ -461,9 +525,9 @@ layer_web() {
         fi
     fi
 
-    # Pure-module unit tests (rust/web/tests/*.test.mjs) first.
-    echo "=== node --test rust/web/tests" >>"$log"
-    "$node_bin" --test "$RUST_DIR"/web/tests/*.test.mjs >>"$log" 2>&1
+    # Pure-module unit tests (rust/web/tests, scripts/tests: *.test.mjs) first.
+    echo "=== node --test rust/web/tests scripts/tests" >>"$log"
+    "$node_bin" --test "$RUST_DIR"/web/tests/*.test.mjs "$REPO_ROOT"/scripts/tests/*.test.mjs >>"$log" 2>&1
     rc=$?
     units="$(grep -E '^# (pass|fail) ' "$log" | tail -2 | tr '\n' ' ' | sed 's/# //g')"
     if [ "$rc" -ne 0 ]; then
@@ -531,7 +595,7 @@ run_layer() {
 print_summary() {
     local layer any_fail=0
     echo
-    echo "== dualsense-mapper verify summary ($(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo '?'))"
+    echo "== PadToKBM verify summary ($(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo '?'))"
     printf '%-14s %-5s %6s  %s\n' LAYER RESULT TIME DETAIL
     for layer in "${ALL_LAYERS[@]}"; do
         printf '%-14s %-5s %5ss  %s\n' "$layer" "${STATUS[$layer]}" \
