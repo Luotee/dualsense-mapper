@@ -50,3 +50,18 @@ fn shipped_maple_profile_validates() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/maple_artale.json");
     Config::load_from_path(&path).expect("maple profile load+validate");
 }
+
+#[test]
+fn example_help_is_accurate_about_applying_edits() {
+    // The GUI's file watcher applies a saved edit; the --cli mode has no
+    // watcher, so the help must not promise auto-apply without saying so.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let help: Vec<&str> = raw["_help"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let line = help
+        .iter()
+        .find(|l| l.contains("automatically"))
+        .expect("a help line says how edits are applied");
+    assert!(line.contains("--cli") && line.to_lowercase().contains("restart"), "got: {line}");
+}
