@@ -5,8 +5,8 @@
 把 PS5 DualSense 控制器映射成鍵盤按鍵，讓筆電也能用手把玩。2025 年 5 月最初用 Python 寫成，為了讓我太太在 MacBook 上舒服地玩Maplestory Worlds Artale；後來用 Rust 重寫，打包成單一個 Windows 執行檔。
 
 <p align="center">
-  <img src="docs/images/main-window.png" width="820"
-       alt="DualSense Mapper — Mappings 頁籤：可互動的控制器圖，下方是每顆按鈕的按鍵綁定">
+  <img src="docs/images/readme/mappings.png" width="820"
+       alt="DualSense Mapper — Mappings 頁籤：左邊是控制器圖，右邊是每顆按鈕綁定的鍵">
   <br>
   <sub>直接點控制器圖上的按鈕就能綁定。按鈕名稱來自你的設定檔，可以改成任何你想要的字。</sub>
 </p>
@@ -20,6 +20,29 @@
 - **不會卡鍵。** 每一次合成按下都經過同一層帶引用計數的 safety 層；`Drop` 與 panic hook 保證即使 process 死掉，仍握著的鍵全部放開。
 - **可以直接從 app 關掉控制器**（Windows）—— 送的是 Bluetooth link 層 disconnect，配對保留，按 PS 鍵就能重連，跟 PS5 主機一樣。
 - **只有一個約 11 MB 的 `.exe`。** 不用安裝程式、沒有 DLL、沒有驅動、不做 process hooking —— 只用 user-mode `SendInput`。設定是首次執行時寫在 exe 旁邊的單一 JSON 檔。
+
+## 介面一覽
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/bind-popup.png" alt="三角鍵的綁定視窗：Key / Macro / Mouse / Unbound，顯示目前的鍵與 Save"></td>
+    <td width="50%"><img src="docs/images/readme/macros.png" alt="Macros 頁籤：一個會重複的巨集，每一步是按下或放開，各有最短～最長延遲（毫秒）"></td>
+  </tr>
+  <tr>
+    <td><sub><b>綁定按鈕。</b>在圖上或清單裡點一顆按鈕，選 Key / Macro / Mouse / Unbound，按下想要的鍵，Save。立刻生效，不用重開。</sub></td>
+    <td><sub><b>巨集。</b>一串按下／放開的步驟。每個延遲都是「最短～最長」的範圍，重複執行時節奏不會一模一樣。</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/readme/settings.png" alt="Settings 頁籤：搖桿死區、扳機門檻、防作弊的時間範圍、觸控板游標"></td>
+    <td><img src="docs/images/readme/activity.png" alt="活動紀錄：每次按下的按鈕、送出的鍵、啟動的巨集"></td>
+  </tr>
+  <tr>
+    <td><sub><b>設定。</b>搖桿死區、扳機按多深算按下、隨機化的按鍵時間，以及觸控板游標。</sub></td>
+    <td><sub><b>活動紀錄</b>（📊）。即時列出每次按下的按鈕、送出的鍵和啟動的巨集，進遊戲前可以先確認綁定對不對。</sub></td>
+  </tr>
+</table>
+
+<sub>截圖用的是示範設定，可用 <code>scripts/readme-shots.mjs</code> 重新產生。</sub>
 
 ## 怎麼取得
 
