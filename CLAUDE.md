@@ -393,10 +393,12 @@ git tag -a vX.Y.Z -m "Release vX.Y.Z" <merge-commit-sha>
 git push origin vX.Y.Z
 ```
 
-Then attach the cross-compiled `dualsense-mapper.exe` + a sample
-`dualsense-mapper.json` as the GitHub Release artefact (`gh release
-create vX.Y.Z target/x86_64-pc-windows-gnu/release/dualsense-mapper.exe
-rust/config.example.json --title "v0.1.0" --notes-from-tag`).
+Then attach the GUI `dualsense-mapper.exe` (the WebView2-static MSVC
+build above) + a sample `dualsense-mapper.json` as the GitHub Release
+artefact (`gh release create vX.Y.Z
+rust/target/x86_64-pc-windows-msvc/release/dualsense-mapper.exe
+rust/config.example.json --title "vX.Y.Z" --notes-file <changelog section>
+--latest`).
 
 End users download the two files, drop them in a folder, run.
 
