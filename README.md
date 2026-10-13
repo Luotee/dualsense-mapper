@@ -5,8 +5,8 @@
 Map a PS5 DualSense controller to keyboard keys for use on a laptop. Originally written in Python in May 2025 to let my wife play MapleStory Worlds Artale comfortably on a MacBook; rewritten in Rust to ship as a single Windows executable.
 
 <p align="center">
-  <img src="docs/images/main-window.png" width="820"
-       alt="DualSense Mapper — Mappings tab showing the interactive controller map above per-button key bindings">
+  <img src="docs/images/readme/mappings.png" width="820"
+       alt="DualSense Mapper — Mappings tab: the controller picture on the left, every button's binding on the right">
   <br>
   <sub>Click any button on the controller picture to bind it. Button labels come from your config file, so they can be renamed to anything.</sub>
 </p>
@@ -20,6 +20,29 @@ Map a PS5 DualSense controller to keyboard keys for use on a laptop. Originally 
 - **No stuck keys.** Every synthesized press goes through one refcounted safety layer; `Drop` handlers plus a panic hook release everything still held even if the process dies.
 - **Turn the controller off from the app** (Windows) — a Bluetooth link-level disconnect, so the pairing survives and pressing PS reconnects, exactly like a PS5.
 - **One ~11 MB `.exe`.** No installer, no DLLs, no driver, no process hooking — user-mode `SendInput` only. Config is a single JSON file written next to the exe on first run.
+
+## A look around
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/readme/bind-popup.png" alt="Bind popup for Triangle: Key / Macro / Mouse / Unbound, with the current key and Save"></td>
+    <td width="50%"><img src="docs/images/readme/macros.png" alt="Macros tab: a looping macro with down/up steps, each with a min–max delay in ms"></td>
+  </tr>
+  <tr>
+    <td><sub><b>Bind a button.</b> Click it on the picture or in the list, pick Key / Macro / Mouse / Unbound, press the key you want, Save. It applies at once — no restart.</sub></td>
+    <td><sub><b>Macros.</b> A list of key down / up steps. Every delay is a min–max range, so a looping macro never repeats the exact same timing.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/readme/settings.png" alt="Settings tab: stick deadzone, trigger threshold, anti-cheat timing ranges, touchpad cursor"></td>
+    <td><img src="docs/images/readme/activity.png" alt="Activity log: each button press, the key it sent, and the macro it started"></td>
+  </tr>
+  <tr>
+    <td><sub><b>Settings.</b> Stick deadzone, how far a trigger counts as pressed, the randomized press timing, and the touchpad cursor.</sub></td>
+    <td><sub><b>Activity log</b> (📊). Every button press, the key it sent and the macro it started, live — handy to check a binding before a game.</sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots use a demo config. Regenerate them with <code>scripts/readme-shots.mjs</code>.</sub>
 
 ## Get it
 
