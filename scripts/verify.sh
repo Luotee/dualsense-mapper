@@ -461,6 +461,16 @@ layer_web() {
         fi
     fi
 
+    # Pure-module unit tests (rust/web/tests/*.test.mjs) first.
+    echo "=== node --test rust/web/tests" >>"$log"
+    "$node_bin" --test "$RUST_DIR"/web/tests/*.test.mjs >>"$log" 2>&1
+    rc=$?
+    units="$(grep -E '^# (pass|fail) ' "$log" | tail -2 | tr '\n' ' ' | sed 's/# //g')"
+    if [ "$rc" -ne 0 ]; then
+        record web FAIL "unit tests: ${units:-rc=$rc}"
+        return
+    fi
+
     version="$(sed -n -E 's/^version = "([^"]+)"/\1/p' "$RUST_DIR/Cargo.toml" | head -1)"
     echo "=== web-smoke (node $node_bin, chrome $chrome)" >>"$log"
     NODE_PATH="$node_dir/node_modules" "$node_bin" "$REPO_ROOT/scripts/verify/web-smoke.mjs" \
@@ -472,7 +482,7 @@ layer_web() {
     rc=$?
     summary="$(grep -E '^web-smoke: ' "$log" | tail -1 | sed 's/^web-smoke: //')"
     if [ "$rc" -eq 0 ]; then
-        record web PASS "${summary:-ok}; screenshots in target/verify/"
+        record web PASS "units ${units}; ${summary:-ok}; screenshots in target/verify/"
     else
         record web FAIL "${summary:-web-smoke rc=$rc}"
     fi
