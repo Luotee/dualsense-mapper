@@ -14,6 +14,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The files beside the exe are `padtokbm.json` and `padtokbm.ui.json`.
 - New app and tray icons: the DualSense from the key-binding board. The
   tray icon is in colour while a controller is connected and grey without one.
+- One README, in Chinese (`README.md`), in the shape of a quick start + FAQ;
+  `README.zh-TW.md` and the outdated `rust/README.md` are gone (the
+  anti-cheat rules moved to `CLAUDE.md`).
 - Font tooling for contributors: `python3 scripts/build-font.py` fetches its
   pinned venv and Cubic 11 v1.500 itself (`scripts/font_tools.py`).
 

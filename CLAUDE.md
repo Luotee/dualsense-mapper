@@ -343,10 +343,19 @@ regresses real, observed bugs the codebase already fixed once:
 
 This tool is not a cheat — it remaps physical inputs to keyboard
 inputs. The synthesis pipeline avoids fixed-period patterns so it
-doesn't get misclassified as one. The rules are listed in
-`rust/README.md` § Anti-cheat self-discipline and enforced
-mechanically by config validation + the iron rules above. Do not
-ship a feature that requires bypassing them.
+doesn't get misclassified as one. The rules (the user-facing summary
+is the README FAQ「會不會被當成外掛？」):
+
+- Macro step delays are always `[min, max]` ranges, never constants.
+- Synthesized keys honor `min_press_ms` (randomized minimum down/up gap).
+- Simultaneous events on the same gamepad tick are spread by `tick_jitter_ms`.
+- No process hooking, DLL injection, or driver (the ViGEmBus exception
+  in iron rule 7 aside). User-mode `SendInput` / `CGEvent` only.
+- `log_events: true` writes every synthesized event with a timestamp
+  so the user can self-audit.
+
+They are enforced mechanically by config validation + the iron rules
+above. Do not ship a feature that requires bypassing them.
 
 Note: **`SendInput` does not trigger Windows OS auto-repeat.** This is
 expected — auto-repeat is a kbdclass-driver-level feature for real
