@@ -3,6 +3,29 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-10-13
+
+### Fixed
+
+- **「記錄每個按鍵事件」 now writes the file.** The switch has been in the
+  settings since v2 but nothing ever wrote a file. With it on, every key the
+  program sends (按下 / 放開) and every macro start goes, with a local
+  timestamp, into `padtokbm-events.log` beside the config; at 1 MiB the file
+  becomes `padtokbm-events.log.1` and a new one starts. If the folder is not
+  writable the program keeps running and logs one warning.
+- **Stick calibration no longer misses a fast turn.** 設定 → 搖桿 reads the
+  stick about 30 times a second, so a quick rotation could pass the rim
+  between two reads and leave a sector unlit. The program now also reports
+  the furthest point each axis reached since the previous read, and the
+  capture counts it.
+- The old `dualsense-mapper.ui.json` is renamed to `padtokbm.ui.json` once
+  at startup, next to the config rename, instead of being checked on every
+  read and write of the UI preferences.
+- When both `padtokbm.json` and an old `dualsense-mapper.json` sit beside
+  the exe, the log now says which one is used
+  (`using padtokbm.json; dualsense-mapper.json left untouched`), so editing
+  the old file by mistake is easier to spot.
+
 ## [3.1.1] - 2026-10-13
 
 ### Fixed
