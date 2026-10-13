@@ -3,6 +3,49 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Released as v3.0.0 together with the new binding board (next PR).
+
+### Added
+
+- Each controller has its own key bindings: the DualSense, the Switch Pro
+  and the Switch 2 Pro no longer share one table. The config file keeps
+  them under `pads.dualsense`, `pads.ns_pro` and `pads.ns2_pro`.
+- Quick-slot pages: while ZL / L2 is held, the D-pad and the four face
+  buttons use a second set of 8 bindings (`quick_l`); ZR / R2 has its own
+  (`quick_r`). An empty slot on a page does nothing while the page is
+  held. If both triggers are held, the one pressed last picks the page.
+  A key held when the trigger is released is still released correctly.
+- Trigger modes, per trigger and per controller (`trigger_mode`):
+  `page` (quick-slot page, the trigger itself sends nothing) or `key`
+  (the trigger is one ordinary button, as before).
+- New GUI commands for the coming binding board: `swap_bindings`,
+  `set_trigger_mode`, `clear_pad`, `reset_pad`, `set_pad_tables` and
+  `open_config_folder`. `set_binding` takes the pad and the page;
+  `disconnect_gamepad` can turn off one chosen controller when two are
+  connected; `get_controller_status` lists every connected controller.
+
+### Changed
+
+- Deleting a macro now unbinds it on every controller and page instead of
+  refusing while it is bound.
+- New default bindings (first run): left stick and D-pad = arrow keys,
+  DualSense touchpad corners = left mouse button, everything else empty,
+  no macros, both triggers in quick-slot page mode with empty pages.
+- The config file is now `"version": 2`. A trigger counts as one press
+  even on pads that report it both as a button and as an axis.
+
+### Migration
+
+- An existing `dualsense-mapper.json` is converted on first load: every
+  controller gets a copy of your old bindings, with both triggers in
+  單鍵 (`key`) mode, so L2 / R2 keep doing what they did. The file is
+  then saved in the new shape and the old top-level `buttons` key is
+  dropped, so v2.x cannot read it any more.
+- Back up `dualsense-mapper.json` before upgrading if you might roll back
+  to v2.x.
+
 ## [2.7.0] - 2026-10-12
 
 ### Added

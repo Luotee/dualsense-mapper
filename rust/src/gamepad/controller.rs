@@ -1,7 +1,7 @@
 //! Controller kinds the mapper can drive. Standalone: no dependency on
 //! `config` so the gamepad layer stays self-contained.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ControllerKind {
     #[serde(rename = "dualsense")]
     DualSense,
@@ -120,6 +120,13 @@ mod tests {
             ControllerKind::DualSense.capabilities(),
             (0..=28).collect::<Vec<u32>>()
         );
+    }
+
+    #[test]
+    fn deserializes_from_slug() {
+        let k: ControllerKind = serde_json::from_str("\"ns2_pro\"").unwrap();
+        assert_eq!(k, ControllerKind::Ns2Pro);
+        assert!(serde_json::from_str::<ControllerKind>("\"ps5\"").is_err());
     }
 
     #[test]

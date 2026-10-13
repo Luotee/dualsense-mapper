@@ -1,5 +1,7 @@
 use crate::config::{Binding, Config, MouseButton};
-use crate::gamepad::GamepadEvent;
+use crate::gamepad::{ControllerKind, GamepadEvent};
+use crate::pad_bindings::{PadBindings, Side, TriggerMode, QUICK_IDS};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyAction {
@@ -21,6 +23,9 @@ pub enum KeyAction {
 
 pub struct Mapper {
     cfg: Config,
+    /// The pad whose table is used: the session owner, or `DualSense` when
+    /// no controller is connected.
+    pad: ControllerKind,
     /// Last reported value per stick axis (0..=3) and trigger axis (4..=5).
     last_axis: [f32; 6],
     /// Active virtual-button state for indices 15..=24.
@@ -32,16 +37,87 @@ pub struct Mapper {
     /// `EngineEvent::ButtonDown` / `ButtonUp` so the GUI can flash the
     /// same press-ring it shows for real, gilrs-delivered button events.
     pending_visual: Vec<(u32, bool)>,
+    /// The binding each held id was pressed with. Its release uses (and
+    /// removes) this entry, so a release always matches its press even if
+    /// the page, the trigger mode or the config changed in between
+    /// (iron rule 2). An id not in here releases nothing.
+    held: HashMap<u32, Binding>,
+    /// Digital trigger state (`ButtonDown(23|24)`), per side. A side is
+    /// held while its digital bit OR its analog virtual is active, so a
+    /// pad that reports both (DualSense, Switch Pro) counts once.
+    trigger_digital: [bool; 2],
+    /// Combined trigger state, per side.
+    trigger_active: [bool; 2],
+    /// Held page-mode triggers, in press order; the last one picks the page.
+    page_stack: Vec<Side>,
+}
+
+const TRIGGER_L: u32 = 23;
+const TRIGGER_R: u32 = 24;
+
+fn trigger_side(id: u32) -> Option<Side> {
+    match id {
+        TRIGGER_L => Some(Side::L),
+        TRIGGER_R => Some(Side::R),
+        _ => None,
+    }
+}
+
+fn side_index(side: Side) -> usize {
+    match side {
+        Side::L => 0,
+        Side::R => 1,
+    }
+}
+
+fn side_id(side: Side) -> u32 {
+    match side {
+        Side::L => TRIGGER_L,
+        Side::R => TRIGGER_R,
+    }
 }
 
 impl Mapper {
     pub fn new(cfg: Config) -> Self {
         Self {
             cfg,
+            pad: ControllerKind::DualSense,
             last_axis: [0.0; 6],
             virt_active: [false; 25],
             pending_visual: Vec::new(),
+            held: HashMap::new(),
+            trigger_digital: [false; 2],
+            trigger_active: [false; 2],
+            page_stack: Vec::new(),
         }
+    }
+
+    /// Use the table of `kind` for presses from now on. `None` (no
+    /// controller) uses the `dualsense` table.
+    pub fn set_pad(&mut self, kind: Option<ControllerKind>) {
+        self.pad = kind.unwrap_or(ControllerKind::DualSense);
+    }
+
+    /// Swap in a new config, keeping the held bindings, the virtual-axis
+    /// state and the held triggers: a key held across the change is still
+    /// released with the binding it was pressed with.
+    pub fn replace_config(&mut self, cfg: Config) {
+        self.cfg = cfg;
+    }
+
+    /// Forget every held press, trigger and stick state, keeping the config
+    /// and the pad. The engine calls this right after it released
+    /// everything itself (pause, mapping ON→OFF): the releases of those
+    /// presses may never arrive (no events are polled while paused), and a
+    /// stale entry would swallow the next press.
+    pub fn reset_input_state(&mut self) {
+        self.last_axis = [0.0; 6];
+        self.virt_active = [false; 25];
+        self.pending_visual.clear();
+        self.held.clear();
+        self.trigger_digital = [false; 2];
+        self.trigger_active = [false; 2];
+        self.page_stack.clear();
     }
 
     /// Drain the buffered virtual-button transitions accumulated since the
@@ -58,8 +134,20 @@ impl Mapper {
     pub fn handle(&mut self, ev: GamepadEvent) -> Vec<KeyAction> {
         match ev {
             GamepadEvent::Connected(_) | GamepadEvent::Disconnected => Vec::new(),
-            GamepadEvent::ButtonDown(id) => self.physical_down(id),
-            GamepadEvent::ButtonUp(id)   => self.physical_up(id),
+            GamepadEvent::ButtonDown(id) => match trigger_side(id) {
+                Some(side) => {
+                    self.trigger_digital[side_index(side)] = true;
+                    self.trigger_edge(side)
+                }
+                None => self.press(id),
+            },
+            GamepadEvent::ButtonUp(id) => match trigger_side(id) {
+                Some(side) => {
+                    self.trigger_digital[side_index(side)] = false;
+                    self.trigger_edge(side)
+                }
+                None => self.release(id),
+            },
             GamepadEvent::Stick { axis, value } => {
                 self.last_axis[axis as usize] = value;
                 self.update_axis_virtuals(axis)
@@ -78,46 +166,65 @@ impl Mapper {
         }
     }
 
-    fn binding_for(&self, id: u32) -> Option<&Binding> {
-        self.cfg.buttons.get(&id.to_string()).map(|e| &e.binding)
+    fn pad_bindings(&self) -> &PadBindings {
+        self.cfg.pad(self.pad)
     }
 
-    fn physical_down(&self, id: u32) -> Vec<KeyAction> {
-        match self.binding_for(id) {
-            Some(Binding::Key(k)) => {
-                tracing::info!(id, key = %k, "press");
-                vec![KeyAction::Press(k.clone())]
-            }
-            Some(Binding::Macro(n)) => {
-                tracing::info!(id, macro_name = %n, "macro start");
-                vec![KeyAction::MacroStart { name: n.clone(), source_id: id }]
-            }
-            Some(Binding::Mouse(b)) => {
-                tracing::info!(id, ?b, "mouse press");
-                vec![KeyAction::MousePress(*b)]
-            }
-            _ => {
-                tracing::debug!(id, "physical_down: id has no binding or is unbound");
-                Vec::new()
-            }
+    /// The binding a press of `id` uses right now: the active quick page
+    /// for a quick id while a page-mode trigger is held (a missing id there
+    /// is `Unbound`, never the base binding), else the base table.
+    fn binding_for_press(&self, id: u32) -> Binding {
+        let pad = self.pad_bindings();
+        let table = match self.page_stack.last() {
+            Some(side) if QUICK_IDS.contains(&id) => pad.table(side.page()),
+            _ => &pad.buttons,
+        };
+        table
+            .get(&id.to_string())
+            .map(|e| e.binding.clone())
+            .unwrap_or(Binding::Unbound)
+    }
+
+    fn press(&mut self, id: u32) -> Vec<KeyAction> {
+        if self.held.contains_key(&id) {
+            tracing::debug!(id, "press: already held, ignored");
+            return Vec::new();
+        }
+        let binding = self.binding_for_press(id);
+        let out = press_actions(id, &binding);
+        self.held.insert(id, binding);
+        out
+    }
+
+    fn release(&mut self, id: u32) -> Vec<KeyAction> {
+        match self.held.remove(&id) {
+            Some(binding) => release_actions(id, &binding),
+            None => Vec::new(),
         }
     }
 
-    fn physical_up(&self, id: u32) -> Vec<KeyAction> {
-        match self.binding_for(id) {
-            Some(Binding::Key(k)) => {
-                tracing::info!(id, key = %k, "release");
-                vec![KeyAction::Release(k.clone())]
+    /// Re-evaluate a trigger side after its digital or analog source
+    /// changed, and act on the combined edge.
+    fn trigger_edge(&mut self, side: Side) -> Vec<KeyAction> {
+        let i = side_index(side);
+        let now = self.trigger_digital[i] || self.virt_active[side_id(side) as usize];
+        if now == self.trigger_active[i] {
+            return Vec::new();
+        }
+        self.trigger_active[i] = now;
+        if now {
+            match self.pad_bindings().trigger_mode.get(side) {
+                TriggerMode::Page => {
+                    self.page_stack.retain(|s| *s != side);
+                    self.page_stack.push(side);
+                    Vec::new()
+                }
+                TriggerMode::Key => self.press(side_id(side)),
             }
-            Some(Binding::Macro(_)) => {
-                tracing::info!(id, "macro stop");
-                vec![KeyAction::MacroStop { source_id: id }]
-            }
-            Some(Binding::Mouse(b)) => {
-                tracing::info!(id, ?b, "mouse release");
-                vec![KeyAction::MouseRelease(*b)]
-            }
-            _ => Vec::new(),
+        } else {
+            // Undo whatever the press did, whatever the mode is now.
+            self.page_stack.retain(|s| *s != side);
+            self.release(side_id(side))
         }
     }
 
@@ -164,7 +271,49 @@ impl Mapper {
         // for stick directions or analog-trigger virtual ids, because those
         // never come back as a real gilrs ButtonPressed event).
         self.pending_visual.push((id, want_active));
-        if want_active { self.physical_down(id) } else { self.physical_up(id) }
+        if let Some(side) = trigger_side(id) {
+            return self.trigger_edge(side);
+        }
+        if want_active { self.press(id) } else { self.release(id) }
+    }
+}
+
+fn press_actions(id: u32, binding: &Binding) -> Vec<KeyAction> {
+    match binding {
+        Binding::Key(k) => {
+            tracing::info!(id, key = %k, "press");
+            vec![KeyAction::Press(k.clone())]
+        }
+        Binding::Macro(n) => {
+            tracing::info!(id, macro_name = %n, "macro start");
+            vec![KeyAction::MacroStart { name: n.clone(), source_id: id }]
+        }
+        Binding::Mouse(b) => {
+            tracing::info!(id, ?b, "mouse press");
+            vec![KeyAction::MousePress(*b)]
+        }
+        Binding::Unbound => {
+            tracing::debug!(id, "press: unbound");
+            Vec::new()
+        }
+    }
+}
+
+fn release_actions(id: u32, binding: &Binding) -> Vec<KeyAction> {
+    match binding {
+        Binding::Key(k) => {
+            tracing::info!(id, key = %k, "release");
+            vec![KeyAction::Release(k.clone())]
+        }
+        Binding::Macro(_) => {
+            tracing::info!(id, "macro stop");
+            vec![KeyAction::MacroStop { source_id: id }]
+        }
+        Binding::Mouse(b) => {
+            tracing::info!(id, ?b, "mouse release");
+            vec![KeyAction::MouseRelease(*b)]
+        }
+        Binding::Unbound => Vec::new(),
     }
 }
 
@@ -172,6 +321,8 @@ impl Mapper {
 mod tests {
     use super::*;
     use crate::config::{ButtonEntry, MacroDef, MacroStep, StepAction};
+    use crate::gamepad::ControllerKind;
+    use crate::pad_bindings::{Page, TriggerMode};
     use std::collections::BTreeMap;
 
     fn cfg_with_overrides(mut overrides: Vec<(u32, Binding)>) -> Config {
@@ -192,14 +343,23 @@ mod tests {
                 key: "Left".into(), action: StepAction::Down, delay_ms: [10, 20],
             }],
         });
+        let pads = crate::gamepad::ControllerKind::ALL
+            .into_iter()
+            .map(|k| (k.slug().to_string(), crate::pad_bindings::PadBindings {
+                buttons: buttons.clone(),
+                quick_l: BTreeMap::new(),
+                quick_r: BTreeMap::new(),
+                trigger_mode: Default::default(),
+            }))
+            .collect();
         Config {
-            version: 1,
+            version: 2,
             deadzone: 0.4,
             trigger_threshold: 0.5,
             min_press_ms: [8, 25],
             tick_jitter_ms: [0, 3],
             log_events: false,
-            buttons, macros,
+            pads, macros,
             touchpad_cursor_enabled: true,
             touchpad_cursor_sensitivity: 1.5,
             touchpad_midpoint_x: 960,
@@ -258,9 +418,10 @@ mod tests {
 
     #[test]
     fn trigger_threshold_drives_virtual_23() {
-        let cfg = cfg_with_overrides(vec![
+        let mut cfg = cfg_with_overrides(vec![
             (23, Binding::Macro("m_left_right".into())),
         ]);
+        cfg.pad_mut(ControllerKind::DualSense).trigger_mode.l = TriggerMode::Key;
         let mut m = Mapper::new(cfg);
         // normalized value < threshold — nothing
         assert!(m.handle(GamepadEvent::Trigger { axis: 4, value: 0.1 }).is_empty());
@@ -312,4 +473,217 @@ mod tests {
         assert_eq!(m.handle(GamepadEvent::ButtonUp(11)),
                    vec![KeyAction::Release("Up".into())]);
     }
+
+    // ─── Per-pad tables, trigger modes, quick pages ─────────────────────────
+
+    fn k(s: &str) -> Binding { Binding::Key(s.into()) }
+    fn press(s: &str) -> Vec<KeyAction> { vec![KeyAction::Press(s.into())] }
+    fn release(s: &str) -> Vec<KeyAction> { vec![KeyAction::Release(s.into())] }
+    fn down(id: u32) -> GamepadEvent { GamepadEvent::ButtonDown(id) }
+    fn up(id: u32) -> GamepadEvent { GamepadEvent::ButtonUp(id) }
+    fn trig(axis: u32, value: f32) -> GamepadEvent { GamepadEvent::Trigger { axis, value } }
+
+    fn set(cfg: &mut Config, kind: ControllerKind, page: Page, id: u32, b: Binding) {
+        cfg.pad_mut(kind).table_mut(page).insert(id.to_string(), ButtonEntry { label: String::new(), binding: b });
+    }
+
+    /// Every pad: base 11 = Up, quick_l 11 = F1, quick_r 11 = F2, both
+    /// triggers in page mode, trigger_threshold 0.5.
+    fn quick_cfg() -> Config {
+        let mut cfg = cfg_with_overrides(vec![(11, k("Up"))]);
+        for kind in ControllerKind::ALL {
+            set(&mut cfg, kind, Page::QuickL, 11, k("F1"));
+            set(&mut cfg, kind, Page::QuickR, 11, k("F2"));
+        }
+        cfg
+    }
+
+    fn mapper() -> Mapper {
+        Mapper::new(quick_cfg())
+    }
+
+    #[test]
+    fn page_mode_trigger_sends_nothing_and_selects_quick_l() {
+        let mut m = mapper();
+        m.set_pad(Some(ControllerKind::DualSense));
+        assert!(m.handle(trig(4, 1.0)).is_empty());
+        assert_eq!(m.handle(down(11)), press("F1"));
+        assert_eq!(m.handle(up(11)), release("F1"));
+        assert!(m.handle(trig(4, 0.0)).is_empty());
+        assert_eq!(m.handle(down(11)), press("Up"), "page gone with the trigger");
+    }
+
+    #[test]
+    fn unbound_quick_slot_sends_nothing() {
+        let mut m = mapper();
+        let mut cfg = quick_cfg();
+        set(&mut cfg, ControllerKind::DualSense, Page::Base, 12, k("Down"));
+        set(&mut cfg, ControllerKind::DualSense, Page::QuickL, 13, Binding::Unbound);
+        m.replace_config(cfg);
+        m.handle(trig(4, 1.0));
+        assert!(m.handle(down(12)).is_empty(), "absent page id: no fall-through to base");
+        assert!(m.handle(up(12)).is_empty());
+        assert!(m.handle(down(13)).is_empty(), "Unbound page id");
+        assert!(m.handle(up(13)).is_empty());
+    }
+
+    #[test]
+    fn non_quick_ids_keep_base_while_page_held() {
+        let mut cfg = quick_cfg();
+        set(&mut cfg, ControllerKind::DualSense, Page::Base, 9, k("q"));
+        let mut m = Mapper::new(cfg);
+        m.handle(trig(4, 1.0));
+        assert_eq!(m.handle(down(9)), press("q"));
+        assert_eq!(m.handle(up(9)), release("q"));
+    }
+
+    #[test]
+    fn release_after_trigger_up_uses_page_binding() {
+        let mut m = mapper();
+        m.handle(trig(4, 1.0));
+        assert_eq!(m.handle(down(11)), press("F1"));
+        assert!(m.handle(trig(4, 0.0)).is_empty());
+        assert_eq!(m.handle(up(11)), release("F1"));
+    }
+
+    #[test]
+    fn press_before_trigger_keeps_base_binding() {
+        let mut m = mapper();
+        assert_eq!(m.handle(down(11)), press("Up"));
+        assert!(m.handle(trig(4, 1.0)).is_empty());
+        assert_eq!(m.handle(up(11)), release("Up"));
+    }
+
+    #[test]
+    fn page_falls_back_to_still_held_trigger() {
+        let mut m = mapper();
+        m.handle(trig(4, 1.0));
+        m.handle(trig(5, 1.0));
+        m.handle(trig(5, 0.0));
+        assert_eq!(m.handle(down(11)), press("F1"));
+    }
+
+    #[test]
+    fn last_pressed_trigger_wins() {
+        let mut m = mapper();
+        m.handle(trig(4, 1.0));
+        m.handle(trig(5, 1.0));
+        assert_eq!(m.handle(down(11)), press("F2"));
+        assert_eq!(m.handle(up(11)), release("F2"));
+        // Re-pressing L while R is still held makes L the last one.
+        m.handle(trig(4, 0.0));
+        m.handle(trig(4, 1.0));
+        assert_eq!(m.handle(down(11)), press("F1"));
+    }
+
+    #[test]
+    fn key_mode_trigger_is_an_ordinary_button() {
+        let mut cfg = quick_cfg();
+        cfg.pad_mut(ControllerKind::DualSense).trigger_mode.l = TriggerMode::Key;
+        set(&mut cfg, ControllerKind::DualSense, Page::Base, 23, k("Q"));
+        let mut m = Mapper::new(cfg);
+        assert_eq!(m.handle(trig(4, 1.0)), press("Q"));
+        assert_eq!(m.handle(down(11)), press("Up"), "quick_l ignored in key mode");
+        assert_eq!(m.handle(up(11)), release("Up"));
+        assert_eq!(m.handle(trig(4, 0.0)), release("Q"));
+    }
+
+    #[test]
+    fn rebind_while_held_releases_original_key() {
+        let mut m = mapper();
+        assert_eq!(m.handle(down(11)), press("Up"));
+        let mut cfg = quick_cfg();
+        set(&mut cfg, ControllerKind::DualSense, Page::Base, 11, k("W"));
+        m.replace_config(cfg);
+        assert_eq!(m.handle(up(11)), release("Up"));
+        assert_eq!(m.handle(down(11)), press("W"));
+    }
+
+    #[test]
+    fn trigger_mode_change_while_page_held_releases_cleanly() {
+        let mut m = mapper();
+        m.handle(trig(4, 1.0));
+        let mut cfg = quick_cfg();
+        cfg.pad_mut(ControllerKind::DualSense).trigger_mode.l = TriggerMode::Key;
+        set(&mut cfg, ControllerKind::DualSense, Page::Base, 23, k("Q"));
+        m.replace_config(cfg);
+        assert!(m.handle(trig(4, 0.0)).is_empty(), "a page press never sent a key, so its release sends none");
+        assert_eq!(m.handle(down(11)), press("Up"));
+    }
+
+    #[test]
+    fn set_pad_switches_tables() {
+        let mut cfg = quick_cfg();
+        set(&mut cfg, ControllerKind::NsPro, Page::Base, 11, k("W"));
+        let mut m = Mapper::new(cfg);
+        assert_eq!(m.handle(down(11)), press("Up"), "no pad: dualsense table");
+        m.handle(up(11));
+        m.set_pad(Some(ControllerKind::NsPro));
+        assert_eq!(m.handle(down(11)), press("W"));
+        m.handle(up(11));
+        m.set_pad(None);
+        assert_eq!(m.handle(down(11)), press("Up"));
+    }
+
+    #[test]
+    fn ns_pro_digital_trigger_counts_once() {
+        let mut m = mapper();
+        m.set_pad(Some(ControllerKind::NsPro));
+        assert!(m.handle(down(23)).is_empty());
+        assert!(m.handle(trig(4, 1.0)).is_empty());
+        assert!(m.handle(up(23)).is_empty());
+        assert_eq!(m.handle(down(11)), press("F1"), "still held: axis active");
+        assert_eq!(m.handle(up(11)), release("F1"));
+        assert!(m.handle(trig(4, 0.0)).is_empty());
+        assert_eq!(m.handle(down(11)), press("Up"), "both sources released");
+    }
+
+    #[test]
+    fn digital_and_analog_trigger_press_a_key_mode_binding_once() {
+        let mut cfg = quick_cfg();
+        cfg.pad_mut(ControllerKind::NsPro).trigger_mode.r = TriggerMode::Key;
+        set(&mut cfg, ControllerKind::NsPro, Page::Base, 24, k("Shift"));
+        let mut m = Mapper::new(cfg);
+        m.set_pad(Some(ControllerKind::NsPro));
+        assert_eq!(m.handle(down(24)), press("Shift"));
+        assert!(m.handle(trig(5, 1.0)).is_empty());
+        assert!(m.handle(trig(5, 0.0)).is_empty(), "digital still down");
+        assert_eq!(m.handle(up(24)), release("Shift"));
+    }
+
+    #[test]
+    fn analog_trigger_still_reports_visual_transitions() {
+        let mut m = mapper();
+        m.handle(trig(4, 1.0));
+        assert_eq!(m.take_visual_transitions(), vec![(23, true)]);
+        m.handle(trig(4, 0.0));
+        assert_eq!(m.take_visual_transitions(), vec![(23, false)]);
+    }
+
+    #[test]
+    fn page_macro_stops_on_release_after_trigger_up() {
+        let mut cfg = quick_cfg();
+        set(&mut cfg, ControllerKind::DualSense, Page::QuickR, 0, Binding::Macro("m_left_right".into()));
+        let mut m = Mapper::new(cfg);
+        m.handle(trig(5, 1.0));
+        assert_eq!(m.handle(down(0)), vec![KeyAction::MacroStart { name: "m_left_right".into(), source_id: 0 }]);
+        m.handle(trig(5, 0.0));
+        assert_eq!(m.handle(up(0)), vec![KeyAction::MacroStop { source_id: 0 }]);
+    }
+
+    #[test]
+    fn reset_input_state_forgets_held_and_keeps_pad() {
+        let mut cfg = quick_cfg();
+        set(&mut cfg, ControllerKind::NsPro, Page::Base, 11, k("W"));
+        let mut m = Mapper::new(cfg);
+        m.set_pad(Some(ControllerKind::NsPro));
+        assert_eq!(m.handle(down(11)), press("W"));
+        m.handle(trig(5, 1.0));
+        m.reset_input_state();
+        assert!(m.handle(up(11)).is_empty(), "everything was already released by the engine");
+        assert_eq!(m.handle(down(11)), press("W"), "same pad, no page, a new press goes through");
+        assert!(m.handle(trig(5, 1.0)).is_empty(), "trigger state forgotten: a fresh page press");
+        assert_eq!(m.take_visual_transitions().last(), Some(&(24, true)));
+    }
 }
+

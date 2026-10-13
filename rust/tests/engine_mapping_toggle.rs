@@ -70,8 +70,7 @@ fn toggle_off_mid_press_releases_held() {
 fn toggle_off_releases_stick_virtual_key() {
     let mut cfg = config_with_dualsense(Some(true));
     // id 15 = L-stick up (axis 1, positive).
-    cfg.buttons.insert(
-        "15".into(),
+    cfg.bind_everywhere(15,
         ButtonEntry { label: "L-stick up".into(), binding: Binding::Key("Up".into()) },
     );
     let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
@@ -101,8 +100,7 @@ fn toggle_off_cancels_running_macro() {
             ],
         },
     );
-    cfg.buttons.insert(
-        "1".into(),
+    cfg.bind_everywhere(1,
         ButtonEntry { label: "Circle".into(), binding: Binding::Macro("hold_left".into()) },
     );
     let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
@@ -195,8 +193,7 @@ fn connected_and_press_in_same_batch_do_not_synth_when_off() {
 #[test]
 fn toggle_off_releases_held_mouse_button() {
     let mut cfg = config_with_dualsense(Some(true));
-    cfg.buttons.insert(
-        "25".into(),
+    cfg.bind_everywhere(25,
         ButtonEntry { label: "Touchpad TL".into(), binding: Binding::Mouse(MouseButton::Left) },
     );
     let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");

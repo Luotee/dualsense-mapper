@@ -66,7 +66,7 @@ fn hot_rebind_picks_up_new_binding_on_next_event() {
     // Swap binding for id 0 from "x" to Unbound.
     {
         let mut guard = handle.config_write();
-        guard.buttons.get_mut("0").unwrap().binding = dualsense_mapper::config::Binding::Unbound;
+        guard.pad_mut(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons.get_mut("0").unwrap().binding = dualsense_mapper::config::Binding::Unbound;
     }
 
     // Give the engine loop a full tick (8 ms) to notice the config change.
@@ -95,3 +95,43 @@ fn connected_status_carries_kind() {
 
     engine.shutdown();
 }
+
+#[test]
+fn status_lists_connected_pads() {
+    use dualsense_mapper::gamepad::{ControllerKind, GamepadEvent};
+    let engine = Engine::spawn_with_fake_gamepad(load_minimal_config()).expect("spawn");
+    let h = engine.handle();
+    h.fake_event(GamepadEvent::Connected(ControllerKind::DualSense));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.current_status().unwrap().connected, vec![ControllerKind::DualSense]);
+    let connected_events: Vec<_> = h
+        .drain_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            EngineEvent::ControllerConnected { connected, .. } => Some(connected),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(connected_events, vec![vec![ControllerKind::DualSense]], "one event, carrying the list");
+    engine.shutdown();
+}
+
+#[test]
+fn disconnect_aimed_at_the_owner_reaches_it() {
+    use dualsense_mapper::gamepad::{ControllerKind, GamepadEvent};
+    let engine = Engine::spawn_with_fake_gamepad(load_minimal_config()).expect("spawn");
+    let h = engine.handle();
+    h.fake_event(GamepadEvent::Connected(ControllerKind::NsPro));
+    std::thread::sleep(Duration::from_millis(100));
+    h.disconnect(Some(ControllerKind::DualSense));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(h.fake_disconnects_received(), 0, "not connected: no-op");
+    h.disconnect(Some(ControllerKind::NsPro));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(h.fake_disconnects_received(), 1);
+    h.disconnect(None);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(h.fake_disconnects_received(), 1, "None = the owner");
+    engine.shutdown();
+}
+

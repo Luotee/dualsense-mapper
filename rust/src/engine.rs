@@ -9,7 +9,7 @@
 //!   * `EngineEvent` — what the loop emits for the activity log.
 
 use crate::config::Config;
-use crate::gamepad::{ControllerKind, CursorParams, GamepadSource, SourceCmd};
+use crate::gamepad::{ControllerKind, CursorParams, GamepadSource, HubCmd, SourceCmd};
 use crate::keyboard::KeyboardSink;
 use crate::macro_engine::MacroEngine;
 use crate::mapper::{KeyAction, Mapper};
@@ -29,8 +29,15 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     /// A controller connected. Sent again, unchanged otherwise, whenever its
-    /// status `warnings` change.
-    ControllerConnected { name: String, transport: String, kind: ControllerKind, warnings: Vec<String> },
+    /// status `warnings` or the `connected` pads change.
+    ControllerConnected {
+        name: String,
+        transport: String,
+        kind: ControllerKind,
+        warnings: Vec<String>,
+        /// Every connected pad: the owner (`kind`) first, then waiting ones.
+        connected: Vec<ControllerKind>,
+    },
     ControllerDisconnected,
     ButtonDown { id: u32 },
     ButtonUp   { id: u32 },
@@ -54,6 +61,9 @@ pub struct ControllerStatus {
     pub transport: String,
     pub kind: ControllerKind,
     pub warnings: Vec<String>,
+    /// Every connected pad: the owner (`kind`) first, then the ones that
+    /// wait for the session.
+    pub connected: Vec<ControllerKind>,
 }
 
 // ─── ConfigWriteGuard — bumps generation on drop ─────────────────────────────
@@ -118,7 +128,7 @@ struct HandleInner {
     /// goes back to searching without exiting the thread); the engine sends
     /// `Rumble` on connect. The gamepad source forwards each to the worker
     /// that owns the session.
-    source_cmd: crossbeam_channel::Sender<SourceCmd>,
+    source_cmd: crossbeam_channel::Sender<HubCmd>,
     /// Status warnings from the gamepad workers (e.g. the NS2 BLE worker's
     /// `ble_rate_limited_win10`). The run loop drains it every tick into
     /// `ControllerStatus.warnings` (kept for the process lifetime).
@@ -276,13 +286,13 @@ impl Handle {
         }
     }
 
-    /// Manual disconnect — the gamepad source forwards it to the worker
-    /// that owns the session (none connected: ignored), which drops its
-    /// device and returns to searching. The thread does NOT exit; a new
-    /// controller (the same or different) reconnects via the normal
-    /// handshake path on next button press.
-    pub fn disconnect_current_device(&self) {
-        let _ = self.inner.source_cmd.send(SourceCmd::Disconnect);
+    /// Manual disconnect of pad `kind` (`None`: the session owner). The
+    /// gamepad source forwards it to the worker whose session is that pad
+    /// (not connected: ignored), which drops its device and returns to
+    /// searching. The thread does NOT exit; the pad reconnects via the
+    /// normal handshake path on its next button press.
+    pub fn disconnect(&self, kind: Option<ControllerKind>) {
+        let _ = self.inner.source_cmd.send(HubCmd { to: kind, cmd: SourceCmd::Disconnect });
     }
 }
 
@@ -302,7 +312,7 @@ impl Engine {
             cfg.touchpad_midpoint_x,
             cfg.touchpad_midpoint_y,
         );
-        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<HubCmd>(4);
         // Bounded: workers `try_send`, and each warning is sent at most once.
         let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
         let src = GamepadSource::new(cursor_params.clone(), cmd_rx, warn_tx)?;
@@ -333,7 +343,7 @@ impl Engine {
             cfg.touchpad_midpoint_y,
         );
         let (fake_tx, fake_rx) = unbounded::<crate::gamepad::GamepadEvent>();
-        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<HubCmd>(4);
         let (source_cmd_tx, source_cmd_rx) = unbounded::<SourceCmd>();
         let src = GamepadSource::fake_with_disconnect(fake_rx, cmd_rx, source_cmd_tx);
         let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
@@ -352,7 +362,7 @@ impl Engine {
         dry_run: bool,
         src: GamepadSource,
         cursor_params: CursorParams,
-        source_cmd: crossbeam_channel::Sender<SourceCmd>,
+        source_cmd: crossbeam_channel::Sender<HubCmd>,
         warn_rx: Receiver<String>,
         pad: Box<dyn VirtualPad>,
     ) -> Result<Self> {
@@ -435,6 +445,8 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
     // Virtual Xbox pad (NS2 Pro, mapping OFF) and the status warnings.
     let mut pad = PadLink::new(pad);
     let mut worker_warnings: Vec<String> = Vec::new();
+    // The connected pads last published in the status.
+    let mut last_connected: Vec<ControllerKind> = Vec::new();
 
     while !h.shutdown.load(Ordering::SeqCst) {
         // ── Source control, paused or not ────────────────────────────────────
@@ -456,14 +468,19 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         if paused && !last_paused {
             // Drain all macros and held keys when pausing.
             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            // No events are polled while paused, so their releases are lost.
+            mapper.reset_input_state();
         }
         last_paused = paused;
 
-        // ── Config change: rebuild mapper ────────────────────────────────────
+        // ── Config change: swap the mapper's config ──────────────────────────
+        // `replace_config`, not a new Mapper: held bindings and trigger
+        // state survive, so a key held across a rebind still releases the
+        // key it pressed (iron rule 2).
         let current_gen = h.config_generation.load(Ordering::SeqCst);
         if current_gen != last_config_gen {
             let cfg = h.config.read().unwrap();
-            mapper = Mapper::new(cfg.clone());
+            mapper.replace_config(cfg.clone());
             last_config_gen = current_gen;
         }
 
@@ -471,6 +488,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         let now_on = mapping_enabled(&h, current_kind);
         if mapping_on && !now_on {
             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            mapper.reset_input_state();
             // An OFF edge may retry a plug that failed earlier this session.
             pad.rearm();
         }
@@ -501,38 +519,39 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                     crate::gamepad::GamepadEvent::Connected(kind) => {
                         let kind = *kind;
                         current_kind = Some(kind);
+                        // From now on presses use this pad's table.
+                        mapper.set_pad(Some(kind));
                         let now_on = mapping_enabled(&h, current_kind);
                         if mapping_on && !now_on {
                             drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+                            mapper.reset_input_state();
                         }
                         mapping_on = now_on;
                         // A fresh session: neutral pad state, one plug attempt.
                         pad.reset_session();
                         pad.sync(wants_pad(paused, mapping_on, current_kind));
+                        last_connected = source.connected_kinds();
                         let status = ControllerStatus {
                             name: kind.display_name().to_string(),
                             transport: "BT".to_string(),
                             kind,
                             warnings: status_warnings(&worker_warnings, &pad),
+                            connected: last_connected.clone(),
                         };
                         *h.current_status.write().unwrap() = Some(status.clone());
-                        let _ = h.event_tx.send(EngineEvent::ControllerConnected {
-                            name: status.name,
-                            transport: status.transport,
-                            kind,
-                            warnings: status.warnings,
-                        });
+                        let _ = h.event_tx.send(connected_event(&status));
                         // Ask the owner for one short rumble. `try_send`: a full
                         // channel must never stall the engine tick.
                         if h.config.read().unwrap().rumble_on_connect {
                             tracing::info!(?kind, "rumble on connect: requested");
-                            if h.source_cmd.try_send(SourceCmd::Rumble).is_err() {
+                            if h.source_cmd.try_send(HubCmd::owner(SourceCmd::Rumble)).is_err() {
                                 tracing::debug!("rumble request dropped: command channel full");
                             }
                         }
                     }
                     crate::gamepad::GamepadEvent::Disconnected => {
                         current_kind = None;
+                        last_connected.clear();
                         // The pad is gone: so is its virtual twin.
                         pad.sync(false);
                         pad.reset_session();
@@ -546,6 +565,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                         // next session's first frame reports every axis, and a
                         // stale `virt_active` would swallow that press.
                         mapper = Mapper::new(mapper.config().clone());
+                        mapper.set_pad(None);
                     }
                     _ => {}
                 }
@@ -590,6 +610,14 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                 }
                 execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
             }
+        }
+
+        // ── Connected pads: re-publish the status when the list changes ─────
+        // (a second pad connects or leaves while the owner keeps the session).
+        let now_connected = source.connected_kinds();
+        if now_connected != last_connected {
+            last_connected = now_connected;
+            republish_status(&h, |s| s.connected = last_connected.clone());
         }
 
         // One pad report per tick at most.
@@ -639,15 +667,26 @@ fn status_warnings(worker: &[String], pad: &PadLink) -> Vec<String> {
 /// Store new warnings in the current status and re-send it. No controller
 /// connected: nothing to show (the next `Connected` carries them).
 fn publish_warnings(h: &HandleInner, warnings: Vec<String>) {
+    republish_status(h, |s| s.warnings = warnings);
+}
+
+/// Patch the current status and re-send it. No controller connected:
+/// nothing to show.
+fn republish_status(h: &HandleInner, patch: impl FnOnce(&mut ControllerStatus)) {
     let mut cur = h.current_status.write().unwrap();
     if let Some(status) = cur.as_mut() {
-        status.warnings = warnings;
-        let _ = h.event_tx.send(EngineEvent::ControllerConnected {
-            name: status.name.clone(),
-            transport: status.transport.clone(),
-            kind: status.kind,
-            warnings: status.warnings.clone(),
-        });
+        patch(status);
+        let _ = h.event_tx.send(connected_event(status));
+    }
+}
+
+fn connected_event(status: &ControllerStatus) -> EngineEvent {
+    EngineEvent::ControllerConnected {
+        name: status.name.clone(),
+        transport: status.transport.clone(),
+        kind: status.kind,
+        warnings: status.warnings.clone(),
+        connected: status.connected.clone(),
     }
 }
 

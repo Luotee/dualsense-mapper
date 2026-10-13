@@ -40,32 +40,34 @@ fn set_macro_creates_new() {
     engine.shutdown();
 }
 
+/// Bind `name` on dualsense base 3 and ns_pro quick_l 0 (on the config
+/// that goes to disk and to the engine).
+fn bind_on_two_pads(cfg: &mut dualsense_mapper::config::Config, name: &str) {
+    use dualsense_mapper::gamepad::ControllerKind;
+    let m = || ButtonEntry { label: "slot".into(), binding: Binding::Macro(name.into()) };
+    cfg.pad_mut(ControllerKind::DualSense).buttons.insert("3".into(), m());
+    cfg.pad_mut(ControllerKind::NsPro).quick_l.insert("0".into(), m());
+}
+
 #[test]
-fn delete_macro_blocked_when_bound_to_button() {
+fn delete_macro_unbinds_everywhere() {
+    use dualsense_mapper::gamepad::ControllerKind;
     let mut cfg = test_helpers::load_example();
-    // Ensure macro "doomed" exists and is bound to button id 23 (L2 trigger).
     cfg.macros.insert("doomed".into(), sample_macro());
-    cfg.buttons.insert(
-        "23".into(),
-        ButtonEntry {
-            label: "L2".into(),
-            binding: Binding::Macro("doomed".into()),
-        },
-    );
+    bind_on_two_pads(&mut cfg, "doomed");
     let cfg_path = test_helpers::tmp_config_with(&cfg);
     let engine = Engine::spawn_with_fake_gamepad(cfg.clone()).unwrap();
     let handle = engine.handle();
 
-    let err = delete_macro_impl(&handle, cfg_path.path(), "doomed").unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("doomed"), "error names macro; got: {msg}");
-    assert!(
-        msg.contains("23") || msg.to_lowercase().contains("bound"),
-        "error names binding location; got: {msg}"
-    );
+    delete_macro_impl(&handle, cfg_path.path(), "doomed").unwrap();
 
-    // Macro still on disk + in live config
-    assert!(handle.config_read().macros.contains_key("doomed"));
+    let disk = dualsense_mapper::config::Config::load_from_path(cfg_path.path()).unwrap();
+    for c in [disk, handle.config_read().clone()] {
+        assert!(!c.macros.contains_key("doomed"));
+        assert_eq!(c.pad(ControllerKind::DualSense).buttons["3"].binding, Binding::Unbound);
+        assert_eq!(c.pad(ControllerKind::DualSense).buttons["3"].label, "slot", "label kept");
+        assert!(!c.pad(ControllerKind::NsPro).quick_l.contains_key("0"), "page entry removed");
+    }
     engine.shutdown();
 }
 
@@ -89,8 +91,7 @@ fn delete_macro_succeeds_when_unbound() {
 fn rename_macro_updates_all_bindings() {
     let mut cfg = test_helpers::load_example();
     cfg.macros.insert("old_name".into(), sample_macro());
-    cfg.buttons.insert(
-        "23".into(),
+    cfg.bind_everywhere(23,
         ButtonEntry {
             label: "L2".into(),
             binding: Binding::Macro("old_name".into()),
@@ -106,11 +107,33 @@ fn rename_macro_updates_all_bindings() {
     assert!(!live.macros.contains_key("old_name"));
     assert!(live.macros.contains_key("new_name"));
     // Binding for button 23 follows the rename
-    if let Binding::Macro(ref name) = live.buttons["23"].binding {
+    if let Binding::Macro(ref name) = live.pad(dualsense_mapper::gamepad::ControllerKind::DualSense).buttons["23"].binding {
         assert_eq!(name, "new_name");
     } else {
         panic!("button 23 should still be a macro binding after rename");
     }
     drop(live);
+    engine.shutdown();
+}
+
+#[test]
+fn rename_macro_rewrites_all_pads_and_pages() {
+    use dualsense_mapper::gamepad::ControllerKind;
+    let mut cfg = test_helpers::load_example();
+    cfg.macros.insert("before".into(), sample_macro());
+    bind_on_two_pads(&mut cfg, "before");
+    let cfg_path = test_helpers::tmp_config_with(&cfg);
+    let engine = Engine::spawn_with_fake_gamepad(cfg.clone()).unwrap();
+    let handle = engine.handle();
+
+    rename_macro_impl(&handle, cfg_path.path(), "before", "after").unwrap();
+
+    let disk = dualsense_mapper::config::Config::load_from_path(cfg_path.path()).unwrap();
+    let want = Binding::Macro("after".into());
+    for c in [disk, handle.config_read().clone()] {
+        assert!(c.macros.contains_key("after") && !c.macros.contains_key("before"));
+        assert_eq!(c.pad(ControllerKind::DualSense).buttons["3"].binding, want);
+        assert_eq!(c.pad(ControllerKind::NsPro).quick_l["0"].binding, want);
+    }
     engine.shutdown();
 }

@@ -9,7 +9,11 @@ pub struct Config {
     pub min_press_ms: [u32; 2],
     pub tick_jitter_ms: [u32; 2],
     pub log_events: bool,
-    pub buttons: BTreeMap<String, ButtonEntry>,
+    /// One binding table per controller, keyed by `ControllerKind::slug()`.
+    /// A version-1 file's top-level `buttons` is migrated into it
+    /// (`migrate_v1`) before the typed parse.
+    #[serde(default)]
+    pub pads: BTreeMap<String, PadBindings>,
     pub macros: BTreeMap<String, MacroDef>,
     #[serde(default = "default_touchpad_cursor_enabled")]
     pub touchpad_cursor_enabled: bool,
@@ -102,6 +106,43 @@ pub enum StepAction {
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::Path;
 
+use crate::gamepad::ControllerKind;
+use crate::pad_bindings::{default_pad_bindings, Page, PadBindings, QUICK_IDS};
+
+/// The on-disk config version this build writes.
+pub const CONFIG_VERSION: u32 = 2;
+
+/// Convert a version-1 config (one top-level `buttons` table) to version 2
+/// in place: every pad slug without a table gets a copy of the old
+/// `buttons`, with both triggers in `key` mode so the old L2 / R2 bindings
+/// keep working; then `buttons` is removed and `version` set to 2.
+/// Idempotent; a no-op for any version other than 1.
+pub fn migrate_v1(raw: &mut serde_json::Value) {
+    use serde_json::{json, Value};
+    if raw.get("version").and_then(Value::as_u64) != Some(1) {
+        return;
+    }
+    let Some(obj) = raw.as_object_mut() else { return };
+    let buttons = obj.remove("buttons");
+    if !obj.get("pads").map_or(false, Value::is_object) {
+        obj.insert("pads".into(), json!({}));
+    }
+    if let Some(buttons) = buttons {
+        let pads = obj.get_mut("pads").and_then(Value::as_object_mut).expect("just inserted");
+        for k in ControllerKind::ALL {
+            pads.entry(k.slug()).or_insert_with(|| {
+                json!({
+                    "buttons": buttons.clone(),
+                    "quick_l": {},
+                    "quick_r": {},
+                    "trigger_mode": { "l": "key", "r": "key" },
+                })
+            });
+        }
+    }
+    obj.insert("version".into(), json!(CONFIG_VERSION));
+}
+
 pub const VALID_BUTTON_IDS: std::ops::RangeInclusive<u32> = 0..=32;
 
 /// Button ids added after v2.0, with the label given to an auto-filled entry:
@@ -125,31 +166,72 @@ impl Config {
     pub fn load_from_path(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config: {}", path.display()))?;
-        let mut cfg: Config = serde_json::from_str(&text)
-            .with_context(|| format!("parsing config: {}", path.display()))?;
-        cfg.fill_added_id_defaults();
-        cfg.validate()?;
-        Ok(cfg)
+        Self::load_from_str_inner(&text)
+            .with_context(|| format!("loading config: {}", path.display()))
     }
 
     pub fn load_from_str(s: &str) -> Result<Self> {
-        let mut cfg: Config = serde_json::from_str(s)
-            .context("parsing config from string")?;
+        Self::load_from_str_inner(s)
+    }
+
+    /// Parse to JSON, migrate a v1 file, typed parse, fill missing pads and
+    /// added ids, validate.
+    fn load_from_str_inner(s: &str) -> Result<Self> {
+        let mut raw: serde_json::Value = serde_json::from_str(s)
+            .context("parsing config JSON")?;
+        migrate_v1(&mut raw);
+        let mut cfg: Config = serde_json::from_value(raw)
+            .context("parsing config")?;
+        cfg.fill_missing_pads();
         cfg.fill_added_id_defaults();
         cfg.validate()?;
         Ok(cfg)
     }
 
+    /// Give every controller slug without a table the default table.
+    pub fn fill_missing_pads(&mut self) {
+        for k in ControllerKind::ALL {
+            self.pads
+                .entry(k.slug().to_string())
+                .or_insert_with(|| default_pad_bindings(k));
+        }
+    }
+
     /// Insert default `Unbound` entries for any `ADDED_IDS` id missing from
-    /// `buttons`. Called on load so that older configs (which never had
-    /// these ids) parse and validate cleanly.
+    /// each pad's `buttons`. Called on load so that older configs (which
+    /// never had these ids) parse and validate cleanly.
     pub fn fill_added_id_defaults(&mut self) {
-        for (id, label) in ADDED_IDS {
-            let key = id.to_string();
-            self.buttons.entry(key).or_insert_with(|| ButtonEntry {
-                label: (*label).to_string(),
-                binding: Binding::Unbound,
-            });
+        for pad in self.pads.values_mut() {
+            for (id, label) in ADDED_IDS {
+                let key = id.to_string();
+                pad.buttons.entry(key).or_insert_with(|| ButtonEntry {
+                    label: (*label).to_string(),
+                    binding: Binding::Unbound,
+                });
+            }
+        }
+    }
+
+    /// The binding table of `kind`. Every loaded or validated config has all
+    /// three pads.
+    pub fn pad(&self, kind: ControllerKind) -> &PadBindings {
+        self.pads
+            .get(kind.slug())
+            .unwrap_or_else(|| panic!("config has no table for pad {}", kind.slug()))
+    }
+
+    pub fn pad_mut(&mut self, kind: ControllerKind) -> &mut PadBindings {
+        self.pads
+            .get_mut(kind.slug())
+            .unwrap_or_else(|| panic!("config has no table for pad {}", kind.slug()))
+    }
+
+    /// Test helper: set `id` in the base table of all three pads.
+    #[doc(hidden)]
+    pub fn bind_everywhere(&mut self, id: u32, entry: ButtonEntry) {
+        self.fill_missing_pads();
+        for pad in self.pads.values_mut() {
+            pad.buttons.insert(id.to_string(), entry.clone());
         }
     }
 
@@ -161,8 +243,11 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1 {
-            bail!("unsupported config version {}; expected 1", self.version);
+        if self.version != CONFIG_VERSION {
+            bail!(
+                "unsupported config version {}; expected {CONFIG_VERSION} (version 1 files are migrated on load)",
+                self.version
+            );
         }
         if self.min_press_ms[0] >= self.min_press_ms[1] {
             bail!("min_press_ms range must have min < max, got {:?}", self.min_press_ms);
@@ -218,30 +303,17 @@ impl Config {
                 bail!("mapping_enabled has unknown controller slug {slug:?}");
             }
         }
-        for id in VALID_BUTTON_IDS {
-            let key = id.to_string();
-            if !self.buttons.contains_key(&key) {
-                bail!("missing button id {id}; config must list all ids 0..=32");
+        for slug in self.pads.keys() {
+            if ControllerKind::from_slug(slug).is_none() {
+                bail!("pads has unknown controller slug {slug:?}");
             }
         }
-        for k in self.buttons.keys() {
-            let id: u32 = k.parse()
-                .map_err(|_| anyhow!("unknown button id {k}; ids must be numeric 0..=32"))?;
-            if !VALID_BUTTON_IDS.contains(&id) {
-                bail!("unknown button id {id}; allowed range is 0..=32");
-            }
-        }
-        for (id, entry) in &self.buttons {
-            if let Binding::Macro(name) = &entry.binding {
-                if !self.macros.contains_key(name) {
-                    bail!("button {id} references unknown macro \"{name}\"");
-                }
-            }
-        }
-        for (id, entry) in &self.buttons {
-            if let Binding::Key(k) = &entry.binding {
-                parse_key(k).with_context(|| format!("button {id}"))?;
-            }
+        for k in ControllerKind::ALL {
+            let slug = k.slug();
+            let Some(pad) = self.pads.get(slug) else {
+                bail!("pads is missing the table for {slug:?}");
+            };
+            self.validate_pad(slug, pad)?;
         }
         for (name, m) in &self.macros {
             for (i, step) in m.steps.iter().enumerate() {
@@ -256,6 +328,48 @@ impl Config {
                         "macro \"{name}\" step {i}: delay_ms range must have min < max, got {:?}",
                         step.delay_ms
                     );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Iron rule 1 per pad, quick-page ids, macro references and key names
+    /// across the pad's three tables.
+    fn validate_pad(&self, slug: &str, pad: &PadBindings) -> Result<()> {
+        for id in VALID_BUTTON_IDS {
+            if !pad.buttons.contains_key(&id.to_string()) {
+                bail!("pads.{slug}: missing button id {id}; config must list all ids 0..=32");
+            }
+        }
+        for k in pad.buttons.keys() {
+            let id: u32 = k.parse().map_err(|_| {
+                anyhow!("pads.{slug}: unknown button id {k}; ids must be numeric 0..=32")
+            })?;
+            if !VALID_BUTTON_IDS.contains(&id) {
+                bail!("pads.{slug}: unknown button id {id}; allowed range is 0..=32");
+            }
+        }
+        for (page, name) in [(Page::QuickL, "quick_l"), (Page::QuickR, "quick_r")] {
+            for k in pad.table(page).keys() {
+                let ok = k.parse::<u32>().map_or(false, |id| QUICK_IDS.contains(&id));
+                if !ok {
+                    bail!(
+                        "pads.{slug}.{name}: id {k} is not allowed on a quick page (only 0..=3 and 11..=14)"
+                    );
+                }
+            }
+        }
+        for (page, name) in [(Page::Base, "buttons"), (Page::QuickL, "quick_l"), (Page::QuickR, "quick_r")] {
+            for (id, entry) in pad.table(page) {
+                match &entry.binding {
+                    Binding::Macro(m) if !self.macros.contains_key(m) => {
+                        bail!("pads.{slug}.{name}: button {id} references unknown macro \"{m}\"");
+                    }
+                    Binding::Key(key) => {
+                        parse_key(key).with_context(|| format!("pads.{slug}.{name}: button {id}"))?;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -377,6 +491,7 @@ fn vk_for_lr_modifier(lower: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pad_bindings::TriggerMode;
 
     #[test]
     fn round_trip_minimal_config() {
@@ -402,14 +517,17 @@ mod tests {
             }
         }"#;
 
-        let cfg: Config = serde_json::from_str(json).expect("parse");
-        assert_eq!(cfg.version, 1);
-        assert_eq!(cfg.buttons.len(), 3);
-        match &cfg.buttons["0"].binding {
+        let mut raw: serde_json::Value = serde_json::from_str(json).expect("parse");
+        migrate_v1(&mut raw);
+        let cfg: Config = serde_json::from_value(raw).expect("typed parse");
+        assert_eq!(cfg.version, 2);
+        let ds = cfg.pad(ControllerKind::DualSense);
+        assert_eq!(ds.buttons.len(), 3);
+        match &ds.buttons["0"].binding {
             Binding::Key(k) => assert_eq!(k, "x"),
             _ => panic!("expected key"),
         }
-        match &cfg.buttons["3"].binding {
+        match &ds.buttons["3"].binding {
             Binding::Unbound => {}
             _ => panic!("expected unbound"),
         }
@@ -418,7 +536,7 @@ mod tests {
     #[test]
     fn rejects_missing_button_id() {
         let mut cfg = sample_full_config();
-        cfg.buttons.remove("7");
+        cfg.pad_mut(ControllerKind::NsPro).buttons.remove("7");
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("missing button id 7"), "got: {err}");
     }
@@ -426,7 +544,7 @@ mod tests {
     #[test]
     fn rejects_extra_button_id() {
         let mut cfg = sample_full_config();
-        cfg.buttons.insert("99".into(), ButtonEntry {
+        cfg.pad_mut(ControllerKind::DualSense).buttons.insert("99".into(), ButtonEntry {
             label: "bogus".into(),
             binding: Binding::Unbound,
         });
@@ -437,7 +555,7 @@ mod tests {
     #[test]
     fn rejects_unknown_macro_reference() {
         let mut cfg = sample_full_config();
-        cfg.buttons.insert("23".into(), ButtonEntry {
+        cfg.pad_mut(ControllerKind::Ns2Pro).buttons.insert("23".into(), ButtonEntry {
             label: "L2".into(),
             binding: Binding::Macro("does_not_exist".into()),
         });
@@ -457,7 +575,7 @@ mod tests {
             }],
         };
         cfg.macros.insert("zero_range".into(), m);
-        cfg.buttons.insert("23".into(), ButtonEntry {
+        cfg.pad_mut(ControllerKind::Ns2Pro).buttons.insert("23".into(), ButtonEntry {
             label: "L2".into(),
             binding: Binding::Macro("zero_range".into()),
         });
@@ -511,7 +629,7 @@ mod tests {
     #[test]
     fn validate_flags_unknown_key_in_binding() {
         let mut cfg = sample_full_config();
-        cfg.buttons.insert("0".into(), ButtonEntry {
+        cfg.pad_mut(ControllerKind::DualSense).buttons.insert("0".into(), ButtonEntry {
             label: "Cross".into(),
             binding: Binding::Key("PotatoButton".into()),
         });
@@ -529,14 +647,23 @@ mod tests {
                 binding: Binding::Unbound,
             });
         }
+        let pads = ControllerKind::ALL
+            .into_iter()
+            .map(|k| (k.slug().to_string(), PadBindings {
+                buttons: buttons.clone(),
+                quick_l: BTreeMap::new(),
+                quick_r: BTreeMap::new(),
+                trigger_mode: Default::default(),
+            }))
+            .collect();
         Config {
-            version: 1,
+            version: 2,
             deadzone: 0.4,
             trigger_threshold: 0.5,
             min_press_ms: [8, 25],
             tick_jitter_ms: [0, 3],
             log_events: false,
-            buttons,
+            pads,
             macros: BTreeMap::new(),
             touchpad_cursor_enabled: true,
             touchpad_cursor_sensitivity: 1.5,
@@ -607,8 +734,10 @@ mod tests {
         assert!(cfg.touchpad_cursor_enabled);
         assert!((cfg.touchpad_cursor_sensitivity - 1.5).abs() < 1e-6);
         for (id, _) in ADDED_IDS {
-            assert!(cfg.buttons.contains_key(&id.to_string()),
-                "touchpad id {id} must be auto-filled");
+            for k in ControllerKind::ALL {
+                assert!(cfg.pad(k).buttons.contains_key(&id.to_string()),
+                    "touchpad id {id} must be auto-filled on {k:?}");
+            }
         }
     }
 
@@ -618,14 +747,14 @@ mod tests {
         let s = serde_json::to_string(&cfg).unwrap();
         let loaded = Config::load_from_str(&s).expect("v2.0 config must load via auto-fill");
         for (id, _) in ADDED_IDS {
-            match &loaded.buttons[&id.to_string()].binding {
+            match &loaded.pad(ControllerKind::DualSense).buttons[&id.to_string()].binding {
                 Binding::Unbound => {}
                 other => panic!("auto-filled id {id} should be Unbound, got {other:?}"),
             }
         }
     }
 
-    /// A v2.0-shaped Config with buttons only 0..=28 (no touchpad ids).
+    /// A Config whose pads list only ids 0..=24 (no ids added since v2.0).
     fn sample_full_config_v20() -> Config {
         let mut buttons = BTreeMap::new();
         for id in 0u32..=24 {
@@ -634,14 +763,23 @@ mod tests {
                 binding: Binding::Unbound,
             });
         }
+        let pads = ControllerKind::ALL
+            .into_iter()
+            .map(|k| (k.slug().to_string(), PadBindings {
+                buttons: buttons.clone(),
+                quick_l: BTreeMap::new(),
+                quick_r: BTreeMap::new(),
+                trigger_mode: Default::default(),
+            }))
+            .collect();
         Config {
-            version: 1,
+            version: 2,
             deadzone: 0.4,
             trigger_threshold: 0.5,
             min_press_ms: [8, 25],
             tick_jitter_ms: [0, 3],
             log_events: false,
-            buttons,
+            pads,
             macros: BTreeMap::new(),
             touchpad_cursor_enabled: true,
             touchpad_cursor_sensitivity: 1.5,
@@ -764,6 +902,127 @@ mod tests {
         use crate::gamepad::ControllerKind;
         let cfg = Config::load_from_str(&minimal_json_with(r#"{"dualsense": false}"#)).unwrap();
         assert!(!cfg.mapping_enabled_for(ControllerKind::DualSense));
+    }
+
+    /// A v1 (pre-pads) config: top-level `buttons` 0..=24, 24 → Shift.
+    fn v1_json() -> String {
+        let mut v: serde_json::Value = serde_json::from_str(r#"{
+            "version": 1, "deadzone": 0.4, "trigger_threshold": 0.5,
+            "min_press_ms": [8, 25], "tick_jitter_ms": [0, 3],
+            "log_events": false, "buttons": {}, "macros": {}
+        }"#).unwrap();
+        for id in 0u32..=24 {
+            v["buttons"][id.to_string()] = serde_json::json!({"label": "", "type": "unbound"});
+        }
+        v["buttons"]["24"] = serde_json::json!({"label": "R2", "type": "key", "value": "Shift"});
+        serde_json::to_string(&v).unwrap()
+    }
+
+    /// A v2 config as JSON, built from the default tables.
+    fn v2_value() -> serde_json::Value {
+        use crate::gamepad::ControllerKind;
+        let mut v: serde_json::Value = serde_json::from_str(r#"{
+            "version": 2, "deadzone": 0.4, "trigger_threshold": 0.5,
+            "min_press_ms": [8, 25], "tick_jitter_ms": [0, 3],
+            "log_events": false, "pads": {}, "macros": {}
+        }"#).unwrap();
+        for k in ControllerKind::ALL {
+            v["pads"][k.slug()] = serde_json::to_value(default_pad_bindings(k)).unwrap();
+        }
+        v
+    }
+
+    #[test]
+    fn v1_buttons_migrate_to_every_pad_in_key_mode() {
+        use crate::gamepad::ControllerKind;
+        let cfg = Config::load_from_str(&v1_json()).unwrap();
+        assert_eq!(cfg.version, 2);
+        for k in ControllerKind::ALL {
+            let p = cfg.pad(k);
+            assert!(matches!(p.buttons["24"].binding, Binding::Key(ref s) if s == "Shift"));
+            assert_eq!(p.trigger_mode.l, TriggerMode::Key);
+            assert_eq!(p.trigger_mode.r, TriggerMode::Key);
+            assert_eq!(p.buttons.len(), 33, "added ids auto-filled per pad");
+        }
+    }
+
+    #[test]
+    fn migrate_v1_is_idempotent_and_noop_on_v2() {
+        let mut v: serde_json::Value = serde_json::from_str(&v1_json()).unwrap();
+        migrate_v1(&mut v);
+        assert_eq!(v["version"], 2);
+        assert!(v.get("buttons").is_none());
+        let once = v.clone();
+        migrate_v1(&mut v);
+        assert_eq!(v, once);
+        let mut v2 = v2_value();
+        let before = v2.clone();
+        migrate_v1(&mut v2);
+        assert_eq!(v2, before);
+    }
+
+    #[test]
+    fn v2_missing_pad_is_filled_with_defaults() {
+        use crate::gamepad::ControllerKind;
+        let mut v = v2_value();
+        v["pads"].as_object_mut().unwrap().remove("ns_pro");
+        v["pads"].as_object_mut().unwrap().remove("ns2_pro");
+        v["pads"]["dualsense"]["buttons"]["0"] = serde_json::json!({"label": "x", "type": "key", "value": "z"});
+        let cfg = Config::load_from_str(&v.to_string()).unwrap();
+        assert_eq!(cfg.pad(ControllerKind::NsPro), &default_pad_bindings(ControllerKind::NsPro));
+        assert_eq!(cfg.pad(ControllerKind::Ns2Pro), &default_pad_bindings(ControllerKind::Ns2Pro));
+        assert!(matches!(cfg.pad(ControllerKind::DualSense).buttons["0"].binding, Binding::Key(ref s) if s == "z"));
+    }
+
+    #[test]
+    fn rejects_quick_page_id_outside_quick_ids() {
+        let mut v = v2_value();
+        v["pads"]["dualsense"]["quick_l"]["5"] = serde_json::json!({"label": "", "type": "key", "value": "F1"});
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains("quick_l") && err.contains('5'), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_pad_slug() {
+        let mut v = v2_value();
+        v["pads"]["ps4"] = serde_json::to_value(default_pad_bindings(crate::gamepad::ControllerKind::DualSense)).unwrap();
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains("ps4"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_config_version_3() {
+        let mut v = v2_value();
+        v["version"] = serde_json::json!(3);
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains('3') && err.contains("version"), "got: {err}");
+    }
+
+    #[test]
+    fn macro_reference_checked_in_quick_pages() {
+        let mut v = v2_value();
+        v["pads"]["ns_pro"]["quick_r"]["1"] = serde_json::json!({"label": "", "type": "macro", "value": "nope"});
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains("nope") && err.contains("quick_r"), "got: {err}");
+    }
+
+    #[test]
+    fn key_name_checked_in_quick_pages() {
+        let mut v = v2_value();
+        v["pads"]["ns2_pro"]["quick_l"]["11"] = serde_json::json!({"label": "", "type": "key", "value": "PotatoButton"});
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains("PotatoButton"), "got: {err}");
+    }
+
+    #[test]
+    fn bind_everywhere_sets_base_of_all_pads() {
+        use crate::gamepad::ControllerKind;
+        let mut cfg = sample_full_config();
+        cfg.bind_everywhere(3, ButtonEntry { label: "t".into(), binding: Binding::Key("F1".into()) });
+        for k in ControllerKind::ALL {
+            assert_eq!(cfg.pad(k).buttons["3"].binding, Binding::Key("F1".into()));
+            assert!(cfg.pad(k).quick_l.is_empty());
+        }
     }
 
     #[test]

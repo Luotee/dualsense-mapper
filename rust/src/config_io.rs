@@ -4,8 +4,10 @@
 //! round-trip of `_help`, `_keyboard_keys`, and any future "_*" doc fields.
 //! We carry both.
 
-use crate::config::{Binding, ButtonEntry, Config, MacroDef, ADDED_IDS};
-use anyhow::{anyhow, Context, Result};
+use crate::config::{migrate_v1, Binding, ButtonEntry, Config, MacroDef, ADDED_IDS};
+use crate::gamepad::ControllerKind;
+use crate::pad_bindings::{PadBindings, Page, Side, TriggerMode};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,6 +23,7 @@ impl ConfigDoc {
             .with_context(|| format!("reading {}", path.display()))?;
         let mut raw: Value = serde_json::from_str(&bytes)
             .with_context(|| format!("parsing {} as JSON", path.display()))?;
+        migrate_v1(&mut raw);
         let mut typed: Config = serde_json::from_value(raw.clone())
             .with_context(|| format!("typed-parsing {}", path.display()))?;
         migrate_touchpad_ids(&mut typed, &mut raw);
@@ -31,6 +34,7 @@ impl ConfigDoc {
     /// Build a `ConfigDoc` from an already-typed value tree. Used by tests
     /// that seed a known config without touching the filesystem first.
     pub fn load_from_value(mut raw: Value) -> Result<Self> {
+        migrate_v1(&mut raw);
         let mut typed: Config =
             serde_json::from_value(raw.clone()).context("typed-parsing in-memory config")?;
         migrate_touchpad_ids(&mut typed, &mut raw);
@@ -133,10 +137,34 @@ impl ConfigDoc {
         self.raw["tick_jitter_ms"] = serde_json::json!([v[0], v[1]]);
     }
 
-    pub fn replace_button(&mut self, id: u32, entry: ButtonEntry) {
+    /// Set one binding in one table of one pad. On a quick page an
+    /// `Unbound` entry removes the id instead of storing it (a missing page
+    /// id already sends nothing).
+    pub fn replace_binding(&mut self, kind: ControllerKind, page: Page, id: u32, entry: ButtonEntry) {
         let k = id.to_string();
-        self.raw["buttons"][&k] = serde_json::to_value(&entry).unwrap();
-        self.typed.buttons.insert(k, entry);
+        let slug = kind.slug();
+        let field = page_field(page);
+        if page != Page::Base && entry.binding == Binding::Unbound {
+            if let Some(obj) = self.raw["pads"][slug][field].as_object_mut() {
+                obj.remove(&k);
+            }
+            self.typed.pad_mut(kind).table_mut(page).remove(&k);
+            return;
+        }
+        self.raw["pads"][slug][field][&k] = serde_json::to_value(&entry).unwrap();
+        self.typed.pad_mut(kind).table_mut(page).insert(k, entry);
+    }
+
+    pub fn set_trigger_mode(&mut self, kind: ControllerKind, side: Side, mode: TriggerMode) {
+        self.typed.pad_mut(kind).trigger_mode.set(side, mode);
+        let modes = self.typed.pad(kind).trigger_mode;
+        self.raw["pads"][kind.slug()]["trigger_mode"] = serde_json::to_value(modes).unwrap();
+    }
+
+    /// Replace one pad's whole table.
+    pub fn replace_pad(&mut self, kind: ControllerKind, pad: PadBindings) {
+        self.raw["pads"][kind.slug()] = serde_json::to_value(&pad).unwrap();
+        self.typed.pads.insert(kind.slug().to_string(), pad);
     }
 
     pub fn replace_macros(&mut self, macros: BTreeMap<String, MacroDef>) {
@@ -162,14 +190,25 @@ impl ConfigDoc {
 /// (`ADDED_IDS`: 25..=32) as `Unbound` into both the typed and the raw JSON view.
 /// The raw patch keeps the next `write_atomic` round-trip honest.
 fn migrate_touchpad_ids(typed: &mut Config, raw: &mut Value) {
+    typed.fill_missing_pads();
     typed.fill_added_id_defaults();
-    for (id, label) in ADDED_IDS {
-        let key = id.to_string();
-        if raw["buttons"][&key].is_null() {
-            raw["buttons"][&key] = serde_json::to_value(&ButtonEntry {
-                label: (*label).to_string(),
-                binding: Binding::Unbound,
-            }).unwrap();
+    if !raw["pads"].is_object() {
+        raw["pads"] = serde_json::json!({});
+    }
+    for k in ControllerKind::ALL {
+        let slug = k.slug();
+        if raw["pads"][slug].is_null() {
+            raw["pads"][slug] = serde_json::to_value(typed.pad(k)).unwrap();
+            continue;
+        }
+        for (id, label) in ADDED_IDS {
+            let key = id.to_string();
+            if raw["pads"][slug]["buttons"][&key].is_null() {
+                raw["pads"][slug]["buttons"][&key] = serde_json::to_value(&ButtonEntry {
+                    label: (*label).to_string(),
+                    binding: Binding::Unbound,
+                }).unwrap();
+            }
         }
     }
     if raw["touchpad_cursor_enabled"].is_null() {
@@ -183,6 +222,15 @@ fn migrate_touchpad_ids(typed: &mut Config, raw: &mut Value) {
     }
     if raw["touchpad_midpoint_y"].is_null() {
         raw["touchpad_midpoint_y"] = Value::from(typed.touchpad_midpoint_y);
+    }
+}
+
+/// The JSON field holding `page` inside a pad.
+fn page_field(page: Page) -> &'static str {
+    match page {
+        Page::Base => "buttons",
+        Page::QuickL => "quick_l",
+        Page::QuickR => "quick_r",
     }
 }
 

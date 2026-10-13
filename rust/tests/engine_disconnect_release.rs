@@ -37,8 +37,7 @@ fn disconnect(h: &Handle) {
 #[test]
 fn disconnect_while_zl_held_releases() {
     let mut cfg = test_helpers::load_example();
-    cfg.buttons.insert(
-        "23".into(),
+    cfg.bind_everywhere(23,
         ButtonEntry { label: "ZL".into(), binding: Binding::Key("a".into()) },
     );
     let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
@@ -91,8 +90,7 @@ fn disconnect_cancels_running_macro() {
             ],
         },
     );
-    cfg.buttons.insert(
-        "1".into(),
+    cfg.bind_everywhere(1,
         ButtonEntry { label: "Circle".into(), binding: Binding::Macro("hold_left".into()) },
     );
     let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
@@ -115,8 +113,7 @@ fn disconnect_cancels_running_macro() {
 #[test]
 fn disconnect_releases_held_mouse_button() {
     let mut cfg = dualsense_cfg();
-    cfg.buttons.insert(
-        "25".into(),
+    cfg.bind_everywhere(25,
         ButtonEntry { label: "Touchpad TL".into(), binding: Binding::Mouse(MouseButton::Left) },
     );
     let engine = Engine::spawn_with_fake_gamepad(cfg).expect("spawn");
@@ -200,7 +197,7 @@ fn disconnect_while_paused_reaches_source() {
     h.set_paused(true);
     std::thread::sleep(STEP);
 
-    h.disconnect_current_device();
+    h.disconnect(None);
     let deadline = std::time::Instant::now() + STEP;
     let mut got = 0;
     while got == 0 && std::time::Instant::now() < deadline {

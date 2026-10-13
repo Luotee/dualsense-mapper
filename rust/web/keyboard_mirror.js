@@ -15,6 +15,7 @@ import { invoke, listen } from './ipc.js';
 import { resolveKeyName } from './key_capture.js';
 import { isCaptureActive } from './capture_state.js';
 import * as controller from './controller.js';
+import * as padView from './pad_view.js';
 
 const DEFER_MS = 30;
 
@@ -31,6 +32,7 @@ function currentSvg() {
 export async function init() {
   await refresh();
   listen('config-changed', refresh);
+  padView.onPadChange(refresh);
   listen('button-down', ev => recentButtonDowns.set(Number(ev.id), performance.now()));
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('keyup',   onKeyUp);
@@ -61,7 +63,7 @@ async function refresh() {
     const cfg = await invoke('get_config');
     const m = new Map();
     const k = new Map();
-    for (const [id, entry] of Object.entries(cfg.buttons || {})) {
+    for (const [id, entry] of Object.entries(padView.baseButtons(cfg, padView.currentPad()))) {
       if (entry?.type !== 'key' || !entry?.value) continue;
       const lower = entry.value.toLowerCase();
       const lookupKeys = MOD_ALIASES_LOWER[lower] || [lower];
