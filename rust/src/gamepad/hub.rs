@@ -23,8 +23,10 @@
 //!   want the engine to see.
 //! * With no owner, other events pass through (the engine's fake source in
 //!   tests sends buttons without `Connected`).
-//! * Commands (manual disconnect, rumble) reach only the owner's worker;
-//!   with no owner they are dropped. They are routed by `service`, which
+//! * Commands (manual disconnect, rumble) carry a target (`HubCmd`). An
+//!   untargeted one reaches only the owner's worker (none: dropped); one
+//!   aimed at a pad reaches the source whose open session is that pad,
+//!   owner or waiting (none: dropped). They are routed by `service`, which
 //!   the engine calls every tick even while paused (when it does not
 //!   `poll`).
 //! * While a source owns the session, a source that can be suspended (the
@@ -42,7 +44,7 @@ use super::controller::ControllerKind;
 use super::cursor_params::CursorParams;
 use super::events::GamepadEvent;
 use super::hid_source::HidSource;
-use super::SourceCmd;
+use super::{HubCmd, SourceCmd};
 use super::ns2_ble::Ns2BleSource;
 
 /// A worker the hub drains.
@@ -85,7 +87,7 @@ pub struct SourceHub {
     slots: Vec<Slot>,
     owner: Option<usize>,
     /// Commands from the engine handle (manual disconnect, rumble).
-    cmd_rx: Option<Receiver<SourceCmd>>,
+    cmd_rx: Option<Receiver<HubCmd>>,
     scratch: Vec<GamepadEvent>,
 }
 
@@ -95,7 +97,7 @@ impl SourceHub {
     /// `warn_tx` receives status warnings from the BLE worker.
     pub fn new(
         params: CursorParams,
-        cmd_rx: Receiver<SourceCmd>,
+        cmd_rx: Receiver<HubCmd>,
         warn_tx: Sender<String>,
     ) -> Result<Self> {
         let (hid_tx, hid_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
@@ -128,7 +130,7 @@ impl SourceHub {
     #[doc(hidden)]
     pub fn fake_with_disconnect(
         rx: Receiver<GamepadEvent>,
-        cmd_rx: Receiver<SourceCmd>,
+        cmd_rx: Receiver<HubCmd>,
         source_cmd_tx: Sender<SourceCmd>,
     ) -> Self {
         Self::from_slots(
@@ -150,7 +152,7 @@ impl SourceHub {
         )
     }
 
-    fn from_slots(slots: Vec<Slot>, cmd_rx: Option<Receiver<SourceCmd>>) -> Self {
+    fn from_slots(slots: Vec<Slot>, cmd_rx: Option<Receiver<HubCmd>>) -> Self {
         SourceHub { slots, owner: None, cmd_rx, scratch: Vec::with_capacity(32) }
     }
 
@@ -179,16 +181,32 @@ impl SourceHub {
         self.sync_suspend();
     }
 
-    /// Forward each pending command to the owner's worker only.
+    /// The connected pads: the owner's first, then the waiting ones.
+    pub fn connected_kinds(&self) -> Vec<ControllerKind> {
+        let owner = self.owner.and_then(|o| self.slots[o].session);
+        let waiting = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != self.owner)
+            .filter_map(|(_, s)| s.session);
+        owner.into_iter().chain(waiting).collect()
+    }
+
+    /// Forward each pending command to its slot: the owner's, or the one
+    /// whose open session is the named pad.
     fn route_commands(&mut self) {
         let Some(rx) = &self.cmd_rx else { return };
-        while let Ok(cmd) = rx.try_recv() {
-            let tx = self.owner.and_then(|o| self.slots[o].cmd_tx.as_ref());
-            match tx {
+        while let Ok(HubCmd { to, cmd }) = rx.try_recv() {
+            let slot = match to {
+                None => self.owner,
+                Some(k) => self.slots.iter().position(|s| s.session == Some(k)),
+            };
+            match slot.and_then(|i| self.slots[i].cmd_tx.as_ref()) {
                 Some(tx) => {
                     let _ = tx.try_send(cmd);
                 }
-                None => tracing::debug!(?cmd, "command with no controller connected; ignored"),
+                None => tracing::debug!(?to, ?cmd, "command for no connected controller; ignored"),
             }
         }
     }
@@ -268,8 +286,8 @@ mod tests {
         hub: SourceHub,
         a: Sender<GamepadEvent>,
         b: Sender<GamepadEvent>,
-        /// Manual disconnect requests (the engine handle's side).
-        disconnect: Sender<SourceCmd>,
+        /// Commands from the engine handle's side.
+        disconnect: Sender<HubCmd>,
         /// What each worker received.
         a_dc: Receiver<SourceCmd>,
         b_dc: Receiver<SourceCmd>,
@@ -476,7 +494,7 @@ mod tests {
         assert_eq!(poll(&mut r.hub), vec![OFF, NS2]);
         assert!(!r.b_suspend.load(Ordering::SeqCst), "BLE promoted: not suspended");
         // Manual disconnect now goes to the promoted owner only.
-        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Disconnect)).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.b_dc.try_iter().count(), 1);
         assert_eq!(r.a_dc.try_iter().count(), 0);
@@ -486,7 +504,7 @@ mod tests {
     fn manual_disconnect_routed_to_owner_only() {
         let mut r = rig();
         // No owner: the request is dropped.
-        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Disconnect)).unwrap();
         assert_eq!(poll(&mut r.hub), vec![]);
         assert!(r.a_dc.try_recv().is_err() && r.b_dc.try_recv().is_err());
 
@@ -495,7 +513,7 @@ mod tests {
         assert_eq!(poll(&mut r.hub), vec![NS2]);
         send(&r.a, &[DS]);
         assert_eq!(poll(&mut r.hub), vec![]);
-        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Disconnect)).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.b_dc.try_iter().count(), 1);
         assert_eq!(r.a_dc.try_iter().count(), 0, "a connected-but-ignored pad stays on");
@@ -503,7 +521,7 @@ mod tests {
         // `b` goes; the waiting `a` is promoted and owns: only `a` is told.
         send(&r.b, &[OFF]);
         assert_eq!(poll(&mut r.hub), vec![OFF, DS]);
-        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Disconnect)).unwrap();
         poll(&mut r.hub);
         assert_eq!(r.a_dc.try_iter().count(), 1);
         assert_eq!(r.b_dc.try_iter().count(), 0);
@@ -516,7 +534,7 @@ mod tests {
         assert_eq!(poll(&mut r.hub), vec![DS]);
         send(&r.b, &[NS2]);
         assert_eq!(poll(&mut r.hub), vec![]);
-        r.disconnect.send(SourceCmd::Rumble).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Rumble)).unwrap();
         r.hub.service();
         assert_eq!(r.a_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Rumble]);
         assert!(r.b_dc.try_recv().is_err());
@@ -525,7 +543,7 @@ mod tests {
     #[test]
     fn rumble_without_owner_is_dropped() {
         let mut r = rig();
-        r.disconnect.send(SourceCmd::Rumble).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Rumble)).unwrap();
         r.hub.service();
         assert!(r.a_dc.try_recv().is_err() && r.b_dc.try_recv().is_err());
     }
@@ -539,7 +557,7 @@ mod tests {
         poll(&mut r.hub);
         send(&r.a, &[OFF]);
         assert_eq!(poll(&mut r.hub), vec![OFF, NS2]);
-        r.disconnect.send(SourceCmd::Rumble).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Rumble)).unwrap();
         r.hub.service();
         assert_eq!(r.b_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Rumble]);
         assert!(r.a_dc.try_recv().is_err());
@@ -550,7 +568,7 @@ mod tests {
         let mut r = rig();
         send(&r.a, &[DS]);
         poll(&mut r.hub);
-        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Disconnect)).unwrap();
         r.hub.service();
         assert_eq!(r.a_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Disconnect]);
         assert!(r.b_dc.try_recv().is_err());
@@ -563,7 +581,7 @@ mod tests {
         send(&r.a, &[DS]);
         assert_eq!(poll(&mut r.hub), vec![DS]);
         send(&r.a, &[GamepadEvent::ButtonDown(0)]);
-        r.disconnect.send(SourceCmd::Disconnect).unwrap();
+        r.disconnect.send(HubCmd::owner(SourceCmd::Disconnect)).unwrap();
         r.hub.service();
         assert_eq!(r.a_dc.try_iter().count(), 1, "owner told without a poll");
         assert_eq!(r.b_dc.try_iter().count(), 0);
@@ -646,5 +664,72 @@ mod tests {
         // Events without a Connected (engine tests' fake pad) still pass.
         send(&tx, &[GamepadEvent::ButtonDown(7), GamepadEvent::ButtonUp(7)]);
         assert_eq!(poll(&mut hub), vec![GamepadEvent::ButtonDown(7), GamepadEvent::ButtonUp(7)]);
+    }
+
+    // ─── Commands aimed at a pad ─────────────────────────────────────────────
+
+    const NSPRO: GamepadEvent = GamepadEvent::Connected(ControllerKind::NsPro);
+
+    #[test]
+    fn disconnect_targets_the_named_waiting_pad() {
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        assert_eq!(poll(&mut r.hub), vec![DS]);
+        send(&r.b, &[NS2]);
+        assert_eq!(poll(&mut r.hub), vec![]);
+        r.disconnect.send(HubCmd::to(ControllerKind::Ns2Pro, SourceCmd::Disconnect)).unwrap();
+        r.hub.service();
+        assert_eq!(r.b_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Disconnect]);
+        assert_eq!(r.a_dc.try_iter().count(), 0, "the owner keeps its session");
+        r.disconnect.send(HubCmd::to(ControllerKind::DualSense, SourceCmd::Disconnect)).unwrap();
+        r.hub.service();
+        assert_eq!(r.a_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Disconnect]);
+        assert_eq!(r.b_dc.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn disconnect_unknown_kind_is_noop() {
+        let mut r = rig();
+        send(&r.a, &[DS]);
+        assert_eq!(poll(&mut r.hub), vec![DS]);
+        r.disconnect.send(HubCmd::to(ControllerKind::NsPro, SourceCmd::Disconnect)).unwrap();
+        r.hub.service();
+        assert_eq!(r.a_dc.try_iter().count(), 0);
+        assert_eq!(r.b_dc.try_iter().count(), 0);
+        // The owner still owns: its events pass, a NsPro on `b` stays ignored.
+        send(&r.a, &[GamepadEvent::ButtonDown(1)]);
+        send(&r.b, &[NSPRO]);
+        assert_eq!(poll(&mut r.hub), vec![GamepadEvent::ButtonDown(1)]);
+        assert_eq!(r.hub.connected_kinds(), vec![ControllerKind::DualSense, ControllerKind::NsPro]);
+    }
+
+    #[test]
+    fn untargeted_command_still_goes_to_owner() {
+        let mut r = rig();
+        send(&r.b, &[NS2]);
+        poll(&mut r.hub);
+        send(&r.a, &[DS]);
+        poll(&mut r.hub);
+        r.disconnect.send(HubCmd::owner(SourceCmd::Rumble)).unwrap();
+        r.hub.service();
+        assert_eq!(r.b_dc.try_iter().collect::<Vec<_>>(), vec![SourceCmd::Rumble]);
+        assert_eq!(r.a_dc.try_iter().count(), 0);
+    }
+
+    #[test]
+    fn connected_kinds_lists_owner_then_waiting() {
+        let mut r = rig();
+        assert!(r.hub.connected_kinds().is_empty());
+        send(&r.b, &[NS2]);
+        poll(&mut r.hub);
+        send(&r.a, &[DS]);
+        poll(&mut r.hub);
+        assert_eq!(r.hub.connected_kinds(), vec![ControllerKind::Ns2Pro, ControllerKind::DualSense]);
+        send(&r.b, &[OFF]);
+        poll(&mut r.hub);
+        assert_eq!(r.hub.connected_kinds(), vec![ControllerKind::DualSense], "promoted owner");
+        send(&r.a, &[OFF]);
+        poll(&mut r.hub);
+        assert!(r.hub.connected_kinds().is_empty());
     }
 }

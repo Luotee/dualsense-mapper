@@ -35,3 +35,24 @@ pub enum SourceCmd {
     /// One short, gentle rumble on the connected pad.
     Rumble,
 }
+
+/// A command for the hub: `to: None` goes to the session owner; `Some(k)`
+/// goes to the source whose open session is pad `k` (owner or waiting),
+/// and is dropped if no such pad is connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HubCmd {
+    pub to: Option<ControllerKind>,
+    pub cmd: SourceCmd,
+}
+
+impl HubCmd {
+    /// For the session owner.
+    pub fn owner(cmd: SourceCmd) -> Self {
+        HubCmd { to: None, cmd }
+    }
+
+    /// For pad `kind`, whether it owns the session or waits.
+    pub fn to(kind: ControllerKind, cmd: SourceCmd) -> Self {
+        HubCmd { to: Some(kind), cmd }
+    }
+}

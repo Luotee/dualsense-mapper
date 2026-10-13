@@ -172,3 +172,11 @@ fn writes_keep_help_fields() {
     assert_eq!(help(&f.raw()), before);
     f.engine.shutdown();
 }
+
+#[test]
+fn config_folder_is_the_parent_directory() {
+    use dualsense_mapper::gui::commands::config_folder;
+    let p = std::path::Path::new("/tmp/x/dualsense-mapper.json");
+    assert_eq!(config_folder(p), std::path::PathBuf::from("/tmp/x"));
+    assert_eq!(config_folder(std::path::Path::new("dualsense-mapper.json")), std::path::PathBuf::from("."));
+}

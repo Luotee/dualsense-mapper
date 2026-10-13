@@ -661,6 +661,53 @@ pub fn open_config_in_editor(
     open_path(&*config_path).map_err(|e| format!("{e:#}"))
 }
 
+/// Tauri command: open the folder that holds the config file in the
+/// platform file manager (Windows Explorer, macOS Finder, Linux xdg-open).
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub fn open_config_folder(
+    config_path: tauri::State<'_, std::path::PathBuf>,
+) -> Result<(), String> {
+    let dir = config_folder(&config_path);
+    open_folder(&dir).map_err(|e| format!("{e:#}"))
+}
+
+/// The directory that holds `config_path` (`.` for a bare file name).
+pub fn config_folder(config_path: &Path) -> std::path::PathBuf {
+    match config_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    }
+}
+
+#[cfg(feature = "gui")]
+fn open_folder(dir: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // Explorer returns exit code 1 even on success; only a spawn
+        // failure is an error.
+        std::process::Command::new("explorer")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("launching explorer: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("launching open: {e}"))?;
+    }
+    #[cfg(all(target_os = "linux", feature = "gui"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("launching xdg-open: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(feature = "gui")]
 fn open_path(path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
@@ -721,8 +768,9 @@ pub fn set_capture_active(
     Ok(())
 }
 
-/// Tauri command: turn the controller off. The request goes through
-/// `SourceHub` to the controller currently in use (the owner): a DualSense
+/// Tauri command: turn a controller off. `pad` names it (`null`: the one
+/// in use, the session owner); a pad that is not connected is a no-op. The
+/// request goes through `SourceHub` to that pad's worker: a DualSense
 /// gets the HID Turn Off (IOCTL), a Switch Pro the sleep subcommand, and a
 /// Switch 2 Pro the NS2 Turn Off (06/02) followed by a BLE disconnect. The
 /// workers stay alive and return to searching; pressing a button on the pad
@@ -732,8 +780,9 @@ pub fn set_capture_active(
 #[tauri::command]
 pub fn disconnect_gamepad(
     engine: State<'_, Handle>,
+    pad: Option<ControllerKind>,
 ) -> Result<(), String> {
-    engine.disconnect_current_device();
+    engine.disconnect(pad);
     Ok(())
 }
 

@@ -197,7 +197,7 @@ fn disconnect_while_paused_reaches_source() {
     h.set_paused(true);
     std::thread::sleep(STEP);
 
-    h.disconnect_current_device();
+    h.disconnect(None);
     let deadline = std::time::Instant::now() + STEP;
     let mut got = 0;
     while got == 0 && std::time::Instant::now() < deadline {

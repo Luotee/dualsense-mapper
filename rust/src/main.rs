@@ -10,7 +10,7 @@ use clap::{ArgAction, Parser};
 use crossbeam_channel;
 use dualsense_mapper::app;
 use dualsense_mapper::config::Config;
-use dualsense_mapper::gamepad::{GamepadEvent, GamepadSource, SourceCmd};
+use dualsense_mapper::gamepad::{GamepadEvent, GamepadSource, HubCmd};
 use dualsense_mapper::safety;
 use std::io::Write;
 use std::path::PathBuf;
@@ -278,7 +278,7 @@ fn list_buttons(cfg: Option<Config>) -> Result<()> {
             .unwrap_or_else(|| "<no label — id not in config>".into())
     };
 
-    let (_dummy_disconnect_tx, dummy_disconnect_rx) = crossbeam_channel::bounded::<SourceCmd>(4);
+    let (_dummy_disconnect_tx, dummy_disconnect_rx) = crossbeam_channel::bounded::<HubCmd>(4);
     let (warn_tx, _warn_rx) = crossbeam_channel::bounded::<String>(8);
     let mut source = GamepadSource::new(
         dualsense_mapper::gamepad::CursorParams::default(),
