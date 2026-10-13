@@ -1053,6 +1053,7 @@ dependencies = [
  "aes",
  "anyhow",
  "btleplug",
+ "chrono",
  "clap",
  "crc32fast",
  "crossbeam-channel",

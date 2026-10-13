@@ -25,6 +25,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 tracing = "0.1"
+# Local time for the event log file (already in the tree via Tauri).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 fastrand = "2"
 anyhow = "1"

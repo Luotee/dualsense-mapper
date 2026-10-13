@@ -28,6 +28,10 @@ pub struct RunOptions {
 /// that `KeyboardSink::drop` and `release_all_held` run (Iron rule #3).
 pub fn run(cfg: Config, opts: RunOptions) -> Result<()> {
     let engine = Engine::spawn(cfg, opts.dry_run)?;
+    // The `log_events` file sits beside the config.
+    if let Some(dir) = opts.config_path.parent() {
+        engine.handle().set_log_dir(dir.to_path_buf());
+    }
     // Bind the engine's key state to the global so the panic hook (installed
     // in main::real_main) can drain it on panic. Iron Rule #3, GUI path.
     safety::register_global(engine.handle().key_state());

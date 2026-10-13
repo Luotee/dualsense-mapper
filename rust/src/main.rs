@@ -193,7 +193,11 @@ fn real_main(cli: &Cli) -> Result<()> {
             ctrlc::set_handler(move || s.store(true, Ordering::SeqCst))
                 .context("installing Ctrl-C handler")?;
         }
-        return app::run(cfg, app::RunOptions { dry_run: cli.dry_run, shutdown });
+        return app::run(cfg, app::RunOptions {
+            dry_run: cli.dry_run,
+            log_dir: cfg_path.parent().map(|d| d.to_path_buf()),
+            shutdown,
+        });
     }
 
     // Default: GUI mode (v0.2.0+).
