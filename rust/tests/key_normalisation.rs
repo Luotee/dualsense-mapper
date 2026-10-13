@@ -1,9 +1,9 @@
-//! Parity test: every key name the frontend's `key_capture.js` emits MUST
-//! parse cleanly via Rust's `config::parse_key`. If you add a new key to the
-//! frontend's normalisation table, add it here too — and if `parse_key`
-//! rejects it, fix `parse_key`, not the test.
-//!
-//! Spec §7.4. The frontend table is `rust/web/key_capture.js::normaliseKeyEvent`.
+//! Parity test: every key name the frontend writes to the config MUST parse
+//! cleanly via Rust's `config::parse_key`. The frontend maps palette tiles to
+//! config names in `rust/web/board/model.js::tileToKey` (its own JS test,
+//! `tile_to_key_is_accepted_by_backend_names`, checks every palette key). If
+//! you add a key to the palette, add it here too — and if `parse_key` rejects
+//! it, fix `parse_key`, not the test.
 
 use dualsense_mapper::config::parse_key;
 

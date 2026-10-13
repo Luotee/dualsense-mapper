@@ -481,11 +481,25 @@ layer_web() {
         --version "$version" >>"$log" 2>&1
     rc=$?
     summary="$(grep -E '^web-smoke: ' "$log" | tail -1 | sed 's/^web-smoke: //')"
-    if [ "$rc" -eq 0 ]; then
-        record web PASS "units ${units}; ${summary:-ok}; screenshots in target/verify/"
-    else
+    if [ "$rc" -ne 0 ]; then
         record web FAIL "${summary:-web-smoke rc=$rc}"
+        return
     fi
+
+    # Glyph coverage of the bundled Cubic 11 subset (spec 4.4 / 5.6).
+    local font_py="${DSM_FONT_PY:-$HOME/.cache/dualsense-mapper-tools/venv/bin/python}" font
+    if [ -x "$font_py" ] && "$font_py" -c 'import fontTools, brotli' 2>/dev/null; then
+        echo "=== font-coverage ($font_py)" >>"$log"
+        if "$font_py" "$REPO_ROOT/scripts/verify/font-coverage.py" >>"$log" 2>&1; then
+            font="font ok"
+        else
+            record web FAIL "font coverage: $(grep -E '^(missing|drawn)' "$log" | tail -1)"
+            return
+        fi
+    else
+        font="font SKIP (no fontTools: set DSM_FONT_PY)"
+    fi
+    record web PASS "units ${units}; ${summary:-ok}; ${font}"
 }
 
 # ─── Driver ──────────────────────────────────────────────────────────────────

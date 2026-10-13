@@ -5,7 +5,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Released as v3.0.0 together with the new binding board (next PR).
+To be released as v3.0.0 (after the stick-calibration PR).
 
 ### Added
 
@@ -26,6 +26,25 @@ Released as v3.0.0 together with the new binding board (next PR).
   `disconnect_gamepad` can turn off one chosen controller when two are
   connected; `get_controller_status` lists every connected controller.
 
+- **The key-binding board** replaces the tabbed window: the selected
+  controller in the middle with every button's slot joined to it by a guide
+  line; a keyboard, a mouse and the macro tiles underneath. Drag a tile onto
+  a slot to bind it, drag a slot onto another to swap, drag it out (or
+  double-click) to clear; or click a slot and press a key or mouse button.
+  恢復預設 / 全部清除 per controller, 復原／重做 (Ctrl+Z / Ctrl+Y).
+- Pad buttons with connection lights and a ⏻ on each connected pad;
+  連線震動 and 鍵鼠對應 switches in the header; the trigger captions switch
+  between 快捷頁 and 單鍵.
+- Live feedback: a held pad button lights its slot, its line and the tile
+  it sends; a real key pressed on the window lights its tile and every slot
+  bound to it.
+- Macro box (8 per page, wheel or arrows to turn pages) and a macro editor
+  over the stage: keycap steps, click to toggle down/up, delay pills with a
+  min–max popover, drag to reorder or out to delete.
+- Settings window (gear) with 一般 (config file, open in Notepad / its
+  folder, event log switch, the last 6 events), 搖桿, 觸控板 and 按鍵 tabs.
+- The pixel font Cubic 11 (OFL) is bundled, subset to the UI's characters.
+
 ### Changed
 
 - Deleting a macro now unbinds it on every controller and page instead of
@@ -35,6 +54,16 @@ Released as v3.0.0 together with the new binding board (next PR).
   no macros, both triggers in quick-slot page mode with empty pages.
 - The config file is now `"version": 2`. A trigger counts as one press
   even on pads that report it both as a button and as an axis.
+
+### Removed
+
+- The Mappings / Macros / Settings tabs, the bind popup and the activity
+  drawer (their features moved onto the board, see Added).
+
+### Fixed
+
+- A macro with no steps and `loop: true` no longer spins a thread forever
+  when triggered.
 
 ### Migration
 

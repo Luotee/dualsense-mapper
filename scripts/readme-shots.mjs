@@ -1,10 +1,10 @@
 // readme-shots.mjs — regenerate the README screenshots in docs/images/readme/.
 //
 // Same approach as scripts/verify/web-smoke.mjs: serve rust/web/, inject a
-// mock window.__TAURI__ before the module scripts run, and drive the page
+// mock window.__TAURI__ before the module scripts run, and drive the board
 // with Playwright + the cached Chromium (WebView2 is Chromium too). The mock
-// serves a demo config (rust/config.example.json plus a few bindings and one
-// macro), so the pictures never show anyone's real setup.
+// serves a demo config (rust/config.example.json plus a few bindings, quick
+// pages and two macros), so the pictures never show anyone's real setup.
 //
 //   NODE_PATH=rust/target/verify/node/node_modules node scripts/readme-shots.mjs \
 //     --chrome ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome
@@ -25,27 +25,36 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const webDir = path.join(repo, 'rust/web');
 const outDir = path.join(repo, 'docs/images/readme');
 const argv = process.argv.slice(2);
-const chrome = argv[argv.indexOf('--chrome') + 1];
-if (!chrome || argv.indexOf('--chrome') < 0) throw new Error('missing --chrome <path>');
+const ci = argv.indexOf('--chrome');
+const chrome = ci >= 0 ? argv[ci + 1] : null;
+if (!chrome) throw new Error('missing --chrome <path>');
 const version = /^version = "([^"]+)"/m.exec(fs.readFileSync(path.join(repo, 'rust/Cargo.toml'), 'utf8'))[1];
 fs.mkdirSync(outDir, { recursive: true });
 
 // ─── Demo config ─────────────────────────────────────────────────────────────
 
 const config = JSON.parse(fs.readFileSync(path.join(repo, 'rust/config.example.json'), 'utf8'));
-const ds = config.pads.dualsense.buttons;
-const key = (id, value) => { ds[String(id)] = { label: ds[String(id)].label, type: 'key', value }; };
-key(0, 'Alt'); key(1, 'z'); key(2, 'Shift'); key(3, 'a');
-key(5, 'Space'); key(6, 'Enter'); key(9, 'q'); key(10, 'e');
-ds['24'] = { label: ds['24'].label, type: 'macro', value: 'jump_attack' };
+for (const pad of ['dualsense', 'ns_pro', 'ns2_pro']) {
+  const p = config.pads[pad], b = p.buttons;
+  const key = (id, value) => { b[id] = { label: b[id].label, type: 'key', value }; };
+  key('0', 'LAlt'); key('1', 'z'); key('2', 'LShift'); key('3', 'a');
+  key('9', 'q'); key('10', 'e'); key('6', 'Esc');
+  b['8'] = { label: b['8'].label, type: 'macro', value: '連發' };
+  p.quick_l = {
+    '11': { label: 'D-pad ↑', type: 'key', value: 'F1' }, '12': { label: 'D-pad ↓', type: 'key', value: 'F2' },
+    '13': { label: 'D-pad ←', type: 'key', value: 'F3' }, '14': { label: 'D-pad →', type: 'key', value: 'F4' },
+    '3': { label: 'Triangle', type: 'macro', value: '跳躍攻擊' },
+  };
+  p.quick_r = { '0': { label: 'Cross', type: 'key', value: '1' }, '1': { label: 'Circle', type: 'key', value: '2' }, '2': { label: 'Square', type: 'key', value: '3' }, '3': { label: 'Triangle', type: 'key', value: '4' } };
+}
+config.mapping_enabled = { ...config.mapping_enabled, ns2_pro: true };
 config.macros = {
-  jump_attack: {
-    loop: true,
+  連發: { loop: true, steps: [{ key: 'j', action: 'down', delay_ms: [30, 50] }, { key: 'j', action: 'up', delay_ms: [15, 25] }] },
+  跳躍攻擊: {
+    loop: false,
     steps: [
-      { key: 'Alt', action: 'down', delay_ms: [40, 60] },
-      { key: 'Alt', action: 'up', delay_ms: [15, 25] },
-      { key: 'z', action: 'down', delay_ms: [40, 60] },
-      { key: 'z', action: 'up', delay_ms: [120, 180] },
+      { key: 'LAlt', action: 'down', delay_ms: [40, 60] }, { key: 'LAlt', action: 'up', delay_ms: [15, 25] },
+      { key: 'z', action: 'down', delay_ms: [40, 60] }, { key: 'z', action: 'up', delay_ms: [120, 180] },
     ],
   },
 };
@@ -54,7 +63,7 @@ config.macros = {
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2',
 };
 const server = http.createServer((req, res) => {
   const p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -70,10 +79,7 @@ await new Promise(r => server.listen(0, '127.0.0.1', r));
 function tauriMock({ config, version }) {
   const listeners = {};
   let nextId = 1;
-  const status = {
-    name: 'DualSense Wireless Controller', transport: 'BT', kind: 'dualsense',
-    warnings: [], connected: ['dualsense'],
-  };
+  const status = { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense', 'ns2_pro'] };
   window.__emit = (name, payload) => {
     for (const l of (listeners[name] || []).slice()) l.cb({ event: name, id: l.id, payload });
   };
@@ -82,8 +88,9 @@ function tauriMock({ config, version }) {
     switch (cmd) {
       case 'get_controller_status': return clone(status);
       case 'get_config': return clone(config);
-      case 'get_ui_prefs': return { drawer_open: false, last_tab: null };
+      case 'get_ui_prefs': return { last_pad: 'dualsense' };
       case 'get_app_version': return version;
+      case 'get_config_path': return 'D:\\Games\\dualsense-mapper\\dualsense-mapper.json';
       default: return null;
     }
   }
@@ -104,60 +111,58 @@ function tauriMock({ config, version }) {
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const errors = [];
 try {
-  const context = await browser.newContext({ viewport: { width: 1100, height: 720 }, deviceScaleFactor: 2 });
+  const context = await browser.newContext({ viewport: { width: 980, height: 640 }, deviceScaleFactor: 2 });
   await context.addInitScript(tauriMock, { config, version });
   const page = await context.newPage();
   page.on('pageerror', e => errors.push(String(e)));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.waitForFunction(() => document.querySelectorAll('#chip-list .chip-row').length === 33);
-  const shot = async (name, clipHeight) => {
-    await page.waitForTimeout(250);
-    const clip = clipHeight ? { x: 0, y: 0, width: 1100, height: clipHeight } : undefined;
-    await page.screenshot({ path: path.join(outDir, name), clip });
+  await page.waitForFunction(() => document.querySelectorAll('#board .slot').length > 20);
+  await page.evaluate(() => document.fonts.ready);
+  const shot = async name => {
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(outDir, name) });
     console.log(`wrote docs/images/readme/${name}`);
   };
+  const emit = (name, payload) => page.evaluate(([n, p]) => window.__emit(n, p), [name, payload]);
 
-  // 1. Mappings, controller connected.
-  await shot('mappings.png');
+  // 1. The board, DualSense shown, Cross held: slot, line and tile light up.
+  await emit('button-down', { id: 0 });
+  await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'LAlt', action: 'down' });
+  await shot('board.png');
+  await emit('button-up', { id: 0 });
+  await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'LAlt', action: 'up' });
 
-  // 2. Bind popup on Triangle, Key segment.
-  await page.locator('#chip-list .chip-row[data-id="3"]').click();
-  await page.locator('.bind-popup-overlay').waitFor();
-  await shot('bind-popup.png');
-  await page.locator('.bind-popup-overlay .bp-cancel').click();
-  await page.locator('.bind-popup-overlay').waitFor({ state: 'detached' });
+  // 2. Quick-slot page: ZL held on the Switch 2 Pro lights its page slot.
+  await page.click('#board [data-pad="ns2_pro"]');
+  await emit('button-down', { id: 23 });
+  await emit('button-down', { id: 13 });
+  await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'F3', action: 'down' });
+  await shot('quickslots.png');
+  await emit('button-up', { id: 13 });
+  await emit('button-up', { id: 23 });
+  await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'F3', action: 'up' });
 
-  // 3. Macros tab with the demo macro open.
-  await page.click('[data-tab="macros"]');
-  await page.locator('#pane-macros').getByText('jump_attack').first().click();
-  await shot('macros.png', 380);
+  // 3. Key capture: a slot waits for a key.
+  await page.click('#board .slot[data-slot="4"]');
+  await shot('capture.png');
+  await page.keyboard.press('Escape');
 
-  // 4. Settings tab.
-  await page.click('[data-tab="settings"]');
+  // 4. Settings → 一般, with recent events.
+  await page.click('#board [data-pad="dualsense"]');
+  await page.click('#board [data-act="setopen"]');
+  for (const [kind, extra] of [['emit', { key: 'LAlt', action: 'down' }], ['emit', { key: 'LAlt', action: 'up' }],
+    ['macro-start', { name: '連發' }], ['emit', { key: 'j', action: 'down' }], ['emit', { key: 'j', action: 'up' }], ['macro-end', { name: '連發' }]]) {
+    await emit('activity', { ts_ms: Date.now(), kind, ...extra });
+    await page.waitForTimeout(40);
+  }
   await shot('settings.png');
+  await page.click('#board [data-act="setclose"]');
 
-  // 5. Activity log drawer over the Mappings tab.
-  await page.click('[data-tab="mappings"]');
-  await page.click('#btn-activity');
-  // Cross taps Alt, then holding R2 runs the jump_attack macro. Button
-  // events go through button-down/up (the drawer logs them itself).
-  await page.evaluate(async () => {
-    const seq = [
-      ['button-down', { id: 0 }], ['activity', { kind: 'emit', key: 'Alt', action: 'down' }],
-      ['button-up', { id: 0 }], ['activity', { kind: 'emit', key: 'Alt', action: 'up' }],
-      ['button-down', { id: 24 }], ['activity', { kind: 'macro-start', name: 'jump_attack' }],
-      ['activity', { kind: 'emit', key: 'Alt', action: 'down' }],
-      ['activity', { kind: 'emit', key: 'Alt', action: 'up' }],
-      ['activity', { kind: 'emit', key: 'z', action: 'down' }],
-      ['activity', { kind: 'emit', key: 'z', action: 'up' }],
-      ['button-up', { id: 24 }],
-    ];
-    for (const [name, p] of seq) {
-      window.__emit(name, name === 'activity' ? { ts_ms: Date.now(), ...p } : p);
-      await new Promise(r => setTimeout(r, 60));
-    }
-  });
-  await shot('activity.png');
+  // 5. Macro editor.
+  await page.click('#board [data-medit="跳躍攻擊"]');
+  await shot('macro-editor.png');
+  await page.click('#board .med [data-act="mdone"]');
+
 } finally {
   await browser.close();
   server.close();

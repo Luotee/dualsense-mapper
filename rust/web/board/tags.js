@@ -3,7 +3,7 @@
 export function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
 
 export const TAGTXT = { 'PS:tri': '三角', 'PS:sq': '方塊', 'PS:ring': '圓圈', 'PS:x': '叉叉', 'S:up': '搖桿上', 'S:left': '搖桿左', 'S:right': '搖桿右', 'S:down': '搖桿下', 'S:press': '搖桿按下', 'T:tl': '觸控板左上', 'T:tr': '觸控板右上', 'T:bl': '觸控板左下', 'T:br': '觸控板右下' };
-// The four PlayStation symbols are drawn, not typed: the pixel font has △ ○ □ but not ✕ (U+2715),
+// The four PlayStation symbols are drawn, not typed: the pixel font has △ ○ □ but not the cross (U+2715),
 // which fell back to a system font and looked unlike the other three.
 var PSSYM = {
   tri: '<path d="M5,1.2 L9,8.4 L1,8.4 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',

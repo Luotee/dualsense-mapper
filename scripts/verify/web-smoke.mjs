@@ -43,6 +43,10 @@ const webDir = path.resolve(args['web-dir']);
 const outDir = path.resolve(args['out-dir']);
 const exampleConfig = JSON.parse(fs.readFileSync(args.config, 'utf8'));
 const appVersion = args.version || '0.0.0-mock';
+// Serve with the app's own Content-Security-Policy, so anything WebView2
+// would block (inline script, a foreign font, …) fails here as a console error.
+const tauriConf = JSON.parse(fs.readFileSync(path.join(webDir, '..', 'tauri.conf.json'), 'utf8'));
+const csp = tauriConf.app?.security?.csp || '';
 fs.mkdirSync(outDir, { recursive: true });
 
 // ─── Result bookkeeping ──────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ function startServer() {
       res.end('not found');
       return;
     }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', ...(csp ? { 'Content-Security-Policy': csp } : {}) });
     fs.createReadStream(file).pipe(res);
   });
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
@@ -533,7 +537,7 @@ try {
   }
   await settle(page);
   const rows = await page.locator('#board #logrows .lr').allTextContents();
-  check('最近的事件: at most 6 rows, newest first', rows.length === 6 && /k7/.test(rows[0]) && /放開/.test(rows[0]), rows.slice(0, 2).join(' | '));
+  check('最近的事件: at most 6 rows, newest first', rows.length === 6 && /K7/i.test(rows[0]) && /放開/.test(rows[0]), rows.slice(0, 2).join(' | '));
   for (const t of ['stick', 'tp', 'timing', 'gen']) {
     await page.click(`#board [data-stab="${t}"]`);
     await settle(page);
@@ -590,6 +594,7 @@ try {
   const inPageErrors = await page.evaluate(() => window.__mockErrors);
   const otherMisses = httpMisses.filter(p => p !== '/favicon.ico');
   check('zero pageerror', pageErrors.length === 0, pageErrors.join(' | '));
+  check('served under the app CSP', csp.includes("script-src 'self'"), csp);
   check('zero console errors', consoleErrors.length === 0, consoleErrors.join(' | '));
   check('zero window error / unhandledrejection', inPageErrors.length === 0, inPageErrors.join(' | '));
   check('no unexpected dialogs (alert/confirm/prompt)', dialogs.length === 0, dialogs.join(' | '));

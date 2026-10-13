@@ -1,4 +1,4 @@
-// The board's vocabulary ⇄ the config (pure: no DOM, no IPC).
+// The board's vocabulary <-> the config (pure: no DOM, no IPC).
 //
 // Slots: '11' = base id 11; 'L11' / 'R0' = quick_l 11 / quick_r 0.
 // Tiles: palette key names ('Q', '↑', 'LShift'), mouse tiles ('左鍵' …) and

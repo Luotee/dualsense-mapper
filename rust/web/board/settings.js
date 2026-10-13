@@ -7,7 +7,8 @@ import { esc } from './tags.js';
 import { ICON } from './icons.js';
 import { hook, selectSlot } from './events.js';
 import { settingsFrom } from './actions.js';
-import { PAD_NAMES } from './model.js';
+import { PAD_NAMES, keyToTile } from './model.js';
+import { LABEL } from './keys.js';
 
 const TABS = [['gen', '一般'], ['stick', '搖桿'], ['tp', '觸控板'], ['timing', '按鍵']];
 let badFields = [];
@@ -230,7 +231,10 @@ export async function startSettings(board) {
   });
 
   await listen('activity', p => {
-    if (p.kind === 'emit') log(p.action === 'down' ? '按下' : '放開', '送出 ' + p.key + (p.action === 'down' ? ' 按下' : ' 放開'), p.ts_ms);
+    if (p.kind === 'emit') {
+      const t = keyToTile(p.key), shown = LABEL[t] || t;   // the name printed on the palette key
+      log(p.action === 'down' ? '按下' : '放開', '送出 ' + shown + (p.action === 'down' ? ' 按下' : ' 放開'), p.ts_ms);
+    }
     else if (p.kind === 'macro-start') log('巨集', '巨集「' + p.name + '」開始', p.ts_ms);
     else if (p.kind === 'macro-end') log('巨集', '巨集「' + p.name + '」結束', p.ts_ms);
   });
