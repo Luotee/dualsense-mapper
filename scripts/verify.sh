@@ -306,6 +306,13 @@ cfg["pads"]["dualsense"]["buttons"]["0"]["value"] = "F9"
 json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 PY
     cp "$seed" "$GUI_TMP_LINUX/$LEGACY_CONFIG_NAME"
+    # The first launch was just killed; until its process is gone the
+    # single-instance plugin would make this one hand over and exit.
+    deadline=$((SECONDS + 10))
+    while [ "$SECONDS" -lt "$deadline" ] &&
+          win_run tasklist.exe /FI "IMAGENAME eq $GUI_EXE_NAME" /NH | grep -i "$GUI_EXE_NAME" >/dev/null; do
+        sleep 0.5
+    done
     GUI_PID="$(win_ps "(Start-Process -FilePath '$win_dir\\$GUI_EXE_NAME' -ArgumentList '--dry-run' -WorkingDirectory '$win_dir' -PassThru).Id")"
     if ! [[ "$GUI_PID" =~ ^[0-9]+$ ]]; then
         GUI_PID=""; gui_cleanup; LEGACY_MSG="could not launch the exe"; return 1

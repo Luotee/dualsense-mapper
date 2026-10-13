@@ -185,6 +185,13 @@ What a PASS requires, captured as evidence:
   board's DualSense art by `scripts/build-icons.mjs` (previews in
   `rust/target/icons-preview/`); re-run it when `padart.js` changes.
 
+web-smoke runs in plain Chromium, so it cannot see what WebView2's host
+layer changes. One such trap is pinned by `rust/tests/tauri_conf.rs`: the
+window's `dragDropEnabled` must stay `false`, or Tauri's file-drop handler
+swallows every HTML5 drag on Windows (tile → slot, swap, drag-out clear,
+macro step order) while web-smoke stays green. That shipped in v3.0.0 and
+was fixed in v3.1.1.
+
 For scroll / layout bugs, measure don't eyeball: the board is a fixed
 980×640 surface scaled to the window (`app.js`); at several viewport
 sizes assert `scrollWidth == clientWidth`, `scrollHeight ==
