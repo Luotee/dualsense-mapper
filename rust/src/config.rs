@@ -42,6 +42,10 @@ pub struct Config {
     /// Buzz the controller once when it becomes the active one.
     #[serde(default = "default_rumble_on_connect")]
     pub rumble_on_connect: bool,
+    /// User stick calibration per controller slug (spec 5.5); absent = the
+    /// pad's factory calibration only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stick_cal: BTreeMap<String, crate::gamepad::stick_cal::PadStickCal>,
 }
 
 fn default_rumble_on_connect() -> bool { true }
@@ -307,6 +311,12 @@ impl Config {
             if ControllerKind::from_slug(slug).is_none() {
                 bail!("pads has unknown controller slug {slug:?}");
             }
+        }
+        for (slug, cal) in &self.stick_cal {
+            if ControllerKind::from_slug(slug).is_none() {
+                bail!("stick_cal has unknown controller slug {slug:?}");
+            }
+            crate::gamepad::stick_cal::check(cal).map_err(|e| anyhow!("stick_cal.{slug}: {e}"))?;
         }
         for k in ControllerKind::ALL {
             let slug = k.slug();
@@ -677,6 +687,7 @@ mod tests {
             touchpad_click_freeze_enabled: true,
             mapping_enabled: Default::default(),
             rumble_on_connect: true,
+            stick_cal: Default::default(),
         }
     }
 
@@ -793,6 +804,7 @@ mod tests {
             touchpad_click_freeze_enabled: true,
             mapping_enabled: Default::default(),
             rumble_on_connect: true,
+            stick_cal: Default::default(),
         }
     }
 
@@ -1032,4 +1044,31 @@ mod tests {
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("ps5") && err.contains("mapping_enabled"), "got: {err}");
     }
+
+    #[test]
+    fn config_without_stick_cal_loads() {
+        let cfg = Config::load_from_str(&v2_value().to_string()).unwrap();
+        assert!(cfg.stick_cal.is_empty());
+        assert!(!serde_json::to_string(&cfg).unwrap().contains("stick_cal"), "empty table is not written");
+    }
+
+    #[test]
+    fn rejects_zero_extent() {
+        let mut v = v2_value();
+        v["stick_cal"] = serde_json::json!({ "ns_pro": {
+            "left":  { "x": { "center": 0.0, "neg": 1.0, "pos": 0.0 }, "y": { "center": 0.0, "neg": 1.0, "pos": 1.0 } },
+            "right": { "x": { "center": 0.0, "neg": 1.0, "pos": 1.0 }, "y": { "center": 0.0, "neg": 1.0, "pos": 1.0 } } } });
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains("ns_pro") && err.contains('X'), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_stick_cal_slug() {
+        let mut v = v2_value();
+        let ok = serde_json::json!({ "center": 0.0, "neg": 1.0, "pos": 1.0 });
+        v["stick_cal"] = serde_json::json!({ "ps4": { "left": { "x": ok, "y": ok }, "right": { "x": ok, "y": ok } } });
+        let err = format!("{:#}", Config::load_from_str(&v.to_string()).unwrap_err());
+        assert!(err.contains("ps4"), "got: {err}");
+    }
 }
+

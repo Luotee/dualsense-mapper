@@ -223,3 +223,20 @@ fn replace_pad_round_trips() {
     let cfg = Config::load_from_path(&path).unwrap();
     assert_eq!(cfg.pad(ControllerKind::NsPro), &pad);
 }
+
+#[test]
+fn stick_cal_round_trips_and_removes() {
+    use dualsense_mapper::gamepad::stick_cal::{AxisCal, PadStickCal, StickCal};
+    let (_d, path) = example_copy();
+    let a = AxisCal { center: 0.05, neg: 0.9, pos: 0.95 };
+    let cal = PadStickCal { left: StickCal { x: a, y: AxisCal::IDENTITY }, right: StickCal { x: AxisCal::IDENTITY, y: a } };
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.set_stick_cal(ControllerKind::Ns2Pro, cal);
+    write_atomic(&path, &doc).unwrap();
+    assert_eq!(Config::load_from_path(&path).unwrap().stick_cal["ns2_pro"], cal);
+    let mut doc = ConfigDoc::load(&path).unwrap();
+    doc.remove_stick_cal(ControllerKind::Ns2Pro);
+    write_atomic(&path, &doc).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(raw.get("stick_cal").is_none(), "empty table removed from the file");
+}
