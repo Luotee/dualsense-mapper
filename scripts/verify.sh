@@ -461,9 +461,9 @@ layer_web() {
         fi
     fi
 
-    # Pure-module unit tests (rust/web/tests/*.test.mjs) first.
-    echo "=== node --test rust/web/tests" >>"$log"
-    "$node_bin" --test "$RUST_DIR"/web/tests/*.test.mjs >>"$log" 2>&1
+    # Pure-module unit tests (rust/web/tests, scripts/tests: *.test.mjs) first.
+    echo "=== node --test rust/web/tests scripts/tests" >>"$log"
+    "$node_bin" --test "$RUST_DIR"/web/tests/*.test.mjs "$REPO_ROOT"/scripts/tests/*.test.mjs >>"$log" 2>&1
     rc=$?
     units="$(grep -E '^# (pass|fail) ' "$log" | tail -2 | tr '\n' ' ' | sed 's/# //g')"
     if [ "$rc" -ne 0 ]; then

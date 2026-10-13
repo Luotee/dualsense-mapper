@@ -130,3 +130,25 @@ export function padSvg(pad) {
   return padArt(pad, SHOULDERS[0]).replace('<svg viewBox="-30 -30 360 270" aria-hidden="true">',
     '<svg class="pad" style="left:340px;top:150px;overflow:visible" width="300" height="210" viewBox="0 0 300 210" aria-hidden="true">');
 }
+
+// The pad drawing as an app / tray icon (scripts/build-icons.mjs): square viewBox on the art's bounds,
+// no drop shadow. Small sizes drop the labels (glyphs), the small buttons and thicken every outline;
+// minimal (16 / 24 px) also drops the face buttons, d-pad keys and stick tops.
+// grey: desaturated and faded (tray, no controller connected).
+export function padIconSvg(pad, opts) {
+  var o = opts || {}, k = o.strokeScale || 1, M = model(pad, SHOULDERS[0]);
+  var sw = 5 * k, x0 = 3 - sw / 2, x1 = 297 + sw / 2, y0 = 12.5 - sw / 2, y1 = 206 + sw / 2;
+  var side = Math.max(x1 - x0, y1 - y0) * 1.04, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  var r = function (v) { return Math.round(v * 100) / 100; };
+  var h = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + [r(cx - side / 2), r(cy - side / 2), r(side), r(side)].join(' ') + '">';
+  if (o.grey) h += '<filter id="grey"><feColorMatrix type="saturate" values="0"/></filter><g filter="url(#grey)" opacity=".55">';
+  M.parts.forEach(function (p) {
+    if (!o.small && p.role === 'small') return;
+    if (o.minimal && (p.role === 'face' || p.role === 'dkey' || p.role === 'capTop')) return;
+    var f = fill(p.role);
+    h += '<path d="' + p.d + '"' + (p.tf ? ' transform="' + p.tf + '"' : '') + ' fill="' + f[0] + '"' + (f[1] ? ' stroke="' + K + '" stroke-width="' + r(f[1] * k) + '" stroke-linejoin="round"' : '') + '/>';
+  });
+  if (o.glyphs) h += M.glyphs.filter(function (g) { return o.small || g.role !== 'smallT'; }).map(function (g) { return glyphSvg(g, glyphColor(g)); }).join('');
+  if (o.grey) h += '</g>';
+  return h + '</svg>';
+}
