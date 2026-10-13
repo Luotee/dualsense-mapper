@@ -7,6 +7,10 @@
 //! use it, so a bad capture never reaches the file.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+
+use super::controller::ControllerKind;
 
 /// Largest accepted rest offset from centre, per axis.
 pub const MAX_CENTER: f32 = 0.25;
@@ -54,6 +58,58 @@ impl PadStickCal {
             2 => &self.right.x,
             _ => &self.right.y,
         }
+    }
+}
+
+/// The live corrections, shared by the engine (writer, from the config) and
+/// the hub (reader, per stick event).
+#[derive(Clone, Default)]
+pub struct StickCalTable(Arc<RwLock<HashMap<ControllerKind, PadStickCal>>>);
+
+impl StickCalTable {
+    pub fn get(&self, kind: ControllerKind) -> Option<PadStickCal> {
+        self.0.read().unwrap_or_else(|p| p.into_inner()).get(&kind).copied()
+    }
+
+    pub fn set(&self, kind: ControllerKind, cal: Option<PadStickCal>) {
+        let mut t = self.0.write().unwrap_or_else(|p| p.into_inner());
+        match cal {
+            Some(c) => { t.insert(kind, c); }
+            None => { t.remove(&kind); }
+        }
+    }
+
+    /// Mirror `cfg.stick_cal` (unknown slugs are ignored; validate rejects them).
+    pub fn replace_from(&self, cfg: &crate::config::Config) {
+        let next: HashMap<ControllerKind, PadStickCal> = cfg
+            .stick_cal
+            .iter()
+            .filter_map(|(slug, c)| ControllerKind::from_slug(slug).map(|k| (k, *c)))
+            .collect();
+        *self.0.write().unwrap_or_else(|p| p.into_inner()) = next;
+    }
+}
+
+/// The session owner's latest stick positions, raw (factory calibration
+/// only) and corrected, for the 設定 → 搖桿 view and the capture.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct StickPositions {
+    pub pad: ControllerKind,
+    /// lx, ly, rx, ry
+    pub raw: [f32; 4],
+    pub cal: [f32; 4],
+}
+
+#[derive(Clone, Default)]
+pub struct StickProbe(Arc<Mutex<Option<StickPositions>>>);
+
+impl StickProbe {
+    pub fn snapshot(&self) -> Option<StickPositions> {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub(crate) fn set(&self, p: Option<StickPositions>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = p;
     }
 }
 

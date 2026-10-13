@@ -630,6 +630,68 @@ pub fn set_mapping_enabled_impl(
     Ok(())
 }
 
+// ─── Stick calibration ───────────────────────────────────────────────────────
+
+/// Tauri command: save one pad's stick calibration (validated by the reject
+/// rules in `gamepad::stick_cal::check`).
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn save_stick_cal(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+    cal: crate::gamepad::stick_cal::PadStickCal,
+) -> Result<(), String> {
+    save_stick_cal_impl(&*engine, &config_path, pad, cal).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Pure implementation of `save_stick_cal`.
+pub fn save_stick_cal_impl(
+    engine: &Handle,
+    config_path: &Path,
+    pad: ControllerKind,
+    cal: crate::gamepad::stick_cal::PadStickCal,
+) -> anyhow::Result<()> {
+    crate::gamepad::stick_cal::check(&cal).map_err(|e| anyhow::anyhow!(e))?;
+    mutate_config(engine, config_path, |doc| {
+        doc.set_stick_cal(pad, cal);
+        Ok(())
+    })
+}
+
+/// Tauri command: 恢復出廠校正 — back to the pad's factory calibration.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub fn reset_stick_cal(
+    app: tauri::AppHandle,
+    engine: State<'_, Handle>,
+    config_path: State<'_, PathBuf>,
+    pad: ControllerKind,
+) -> Result<(), String> {
+    reset_stick_cal_impl(&*engine, &config_path, pad).map_err(|e| format!("{e:#}"))?;
+    let _ = app.emit("config-changed", serde_json::json!({"source": "ipc"}));
+    Ok(())
+}
+
+/// Pure implementation of `reset_stick_cal`.
+pub fn reset_stick_cal_impl(engine: &Handle, config_path: &Path, pad: ControllerKind) -> anyhow::Result<()> {
+    mutate_config(engine, config_path, |doc| {
+        doc.remove_stick_cal(pad);
+        Ok(())
+    })
+}
+
+/// Tauri command: the owner's latest raw and corrected stick positions
+/// (polled by 設定 → 搖桿 while it is open).
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub fn get_stick_positions(engine: State<'_, Handle>) -> Option<crate::gamepad::stick_cal::StickPositions> {
+    engine.stick_positions()
+}
+
 // ─── set_rumble_on_connect ───────────────────────────────────────────────────
 
 /// Tauri command: the 連線震動 switch (`rumble_on_connect`, global).

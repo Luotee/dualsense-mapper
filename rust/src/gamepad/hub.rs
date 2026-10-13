@@ -44,6 +44,7 @@ use super::controller::ControllerKind;
 use super::cursor_params::CursorParams;
 use super::events::GamepadEvent;
 use super::hid_source::HidSource;
+use super::stick_cal::{StickCalTable, StickPositions, StickProbe};
 use super::{HubCmd, SourceCmd};
 use super::ns2_ble::Ns2BleSource;
 
@@ -89,6 +90,10 @@ pub struct SourceHub {
     /// Commands from the engine handle (manual disconnect, rumble).
     cmd_rx: Option<Receiver<HubCmd>>,
     scratch: Vec<GamepadEvent>,
+    /// User stick calibration, applied to the owner's stick events.
+    cal: StickCalTable,
+    /// The owner's latest raw and corrected stick positions.
+    probe: StickProbe,
 }
 
 impl SourceHub {
@@ -153,7 +158,34 @@ impl SourceHub {
     }
 
     fn from_slots(slots: Vec<Slot>, cmd_rx: Option<Receiver<HubCmd>>) -> Self {
-        SourceHub { slots, owner: None, cmd_rx, scratch: Vec::with_capacity(32) }
+        SourceHub {
+            slots,
+            owner: None,
+            cmd_rx,
+            scratch: Vec::with_capacity(32),
+            cal: StickCalTable::default(),
+            probe: StickProbe::default(),
+        }
+    }
+
+    /// Share the engine's calibration table and position probe.
+    pub fn with_stick_cal(mut self, cal: StickCalTable, probe: StickProbe) -> Self {
+        self.cal = cal;
+        self.probe = probe;
+        self
+    }
+
+    /// Correct a stick event of the session `kind` and record it in the probe.
+    fn correct_stick(&mut self, kind: ControllerKind, axis: u32, value: f32) -> f32 {
+        let out = self.cal.get(kind).map_or(value, |c| c.axis(axis).apply(value));
+        let i = axis as usize;
+        if i < 4 {
+            let mut p = self.probe.snapshot().filter(|p| p.pad == kind).unwrap_or(StickPositions { pad: kind, raw: [0.0; 4], cal: [0.0; 4] });
+            p.raw[i] = value;
+            p.cal[i] = out;
+            self.probe.set(Some(p));
+        }
+        out
     }
 
     /// Control work that must not wait for `poll`: forward pending commands
@@ -235,6 +267,7 @@ impl SourceHub {
                 if self.owner == Some(i) {
                     out.push(ev);
                     self.owner = None;
+                    self.probe.set(None);
                     self.promote_waiting(out);
                 }
                 return;
@@ -245,6 +278,11 @@ impl SourceHub {
             },
         };
         if pass {
+            if let (GamepadEvent::Stick { axis, value }, Some(kind)) = (ev, self.slots[i].session) {
+                let value = self.correct_stick(kind, axis, value);
+                out.push(GamepadEvent::Stick { axis, value });
+                return;
+            }
             out.push(ev);
         }
     }
@@ -732,4 +770,77 @@ mod tests {
         poll(&mut r.hub);
         assert!(r.hub.connected_kinds().is_empty());
     }
+
+    // ─── Stick calibration in the hub ───────────────────────────────────────
+
+    use crate::gamepad::stick_cal::{AxisCal, PadStickCal, StickCal, StickCalTable, StickProbe};
+
+    fn lx_cal(center: f32, neg: f32, pos: f32) -> PadStickCal {
+        let id = AxisCal::IDENTITY;
+        PadStickCal { left: StickCal { x: AxisCal { center, neg, pos }, y: id }, right: StickCal { x: id, y: id } }
+    }
+
+    fn cal_hub() -> (SourceHub, Sender<GamepadEvent>, Sender<GamepadEvent>, StickCalTable, StickProbe) {
+        let (a, a_rx) = unbounded();
+        let (b, b_rx) = unbounded();
+        let table = StickCalTable::default();
+        let probe = StickProbe::default();
+        let hub = SourceHub::from_fakes(a_rx, b_rx).with_stick_cal(table.clone(), probe.clone());
+        (hub, a, b, table, probe)
+    }
+
+    fn lx(v: f32) -> GamepadEvent { GamepadEvent::Stick { axis: 0, value: v } }
+
+    #[test]
+    fn owner_stick_events_are_corrected() {
+        let (mut hub, _a, b, table, probe) = cal_hub();
+        table.set(ControllerKind::Ns2Pro, Some(lx_cal(0.1, 0.8, 0.6)));
+        send(&b, &[NS2, lx(0.7)]);
+        let out = poll(&mut hub);
+        assert_eq!(out[0], NS2);
+        match out[1] { GamepadEvent::Stick { axis: 0, value } => assert!((value - 1.0).abs() < 1e-5, "{value}"), ref e => panic!("{e:?}") }
+        let p = probe.snapshot().unwrap();
+        assert_eq!(p.pad, ControllerKind::Ns2Pro);
+        assert!((p.raw[0] - 0.7).abs() < 1e-6 && (p.cal[0] - 1.0).abs() < 1e-5, "{p:?}");
+    }
+
+    #[test]
+    fn correction_follows_the_owner() {
+        let (mut hub, a, b, table, probe) = cal_hub();
+        table.set(ControllerKind::Ns2Pro, Some(lx_cal(0.1, 0.8, 0.6)));
+        send(&b, &[NS2]);
+        poll(&mut hub);
+        send(&a, &[DS]);
+        poll(&mut hub);
+        send(&b, &[OFF]);
+        assert_eq!(poll(&mut hub), vec![OFF, DS], "dualsense promoted");
+        send(&a, &[lx(0.7)]);
+        assert_eq!(poll(&mut hub), vec![lx(0.7)], "uncalibrated pad passes unchanged");
+        assert_eq!(probe.snapshot().unwrap().pad, ControllerKind::DualSense);
+    }
+
+    #[test]
+    fn probe_cleared_on_owner_disconnect() {
+        let (mut hub, a, _b, _table, probe) = cal_hub();
+        send(&a, &[DS, lx(0.3)]);
+        poll(&mut hub);
+        assert!(probe.snapshot().is_some());
+        send(&a, &[OFF]);
+        poll(&mut hub);
+        assert!(probe.snapshot().is_none());
+    }
+
+    #[test]
+    fn table_replace_from_config() {
+        let table = StickCalTable::default();
+        let mut cfg = crate::config::Config::load_from_str(include_str!("../../config.example.json")).unwrap();
+        cfg.stick_cal.insert("ns_pro".into(), lx_cal(0.05, 0.9, 0.9));
+        table.replace_from(&cfg);
+        assert_eq!(table.get(ControllerKind::NsPro), Some(lx_cal(0.05, 0.9, 0.9)));
+        assert_eq!(table.get(ControllerKind::DualSense), None);
+        cfg.stick_cal.clear();
+        table.replace_from(&cfg);
+        assert_eq!(table.get(ControllerKind::NsPro), None);
+    }
 }
+
