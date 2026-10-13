@@ -3,6 +3,18 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] - 2026-10-13
+
+### Fixed
+
+- **Dragging works in the app again** (broken since 3.0.0): dragging a key,
+  mouse button or macro from the bottom onto a slot, dragging a slot onto
+  another to swap, dragging it out to clear, and reordering macro steps did
+  nothing in the Windows exe. Tauri's own drag-and-drop handler (used for
+  dropping files on a window) took every drag away from the page in
+  WebView2; it is now turned off (`dragDropEnabled: false`), and a test pins
+  it. Click-to-bind was not affected.
+
 ## [3.1.0] - 2026-10-13
 
 ### Changed
