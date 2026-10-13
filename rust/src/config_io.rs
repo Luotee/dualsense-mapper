@@ -110,6 +110,31 @@ impl ConfigDoc {
         self.raw["touchpad_deadzone_radius"] = Value::from(v);
     }
 
+    pub fn set_stick_cal(&mut self, kind: ControllerKind, cal: crate::gamepad::stick_cal::PadStickCal) {
+        self.typed.stick_cal.insert(kind.slug().to_string(), cal);
+        if !self.raw["stick_cal"].is_object() {
+            self.raw["stick_cal"] = serde_json::json!({});
+        }
+        self.raw["stick_cal"][kind.slug()] = serde_json::to_value(cal).unwrap();
+    }
+
+    /// Back to the factory calibration; drops the `stick_cal` key when empty.
+    pub fn remove_stick_cal(&mut self, kind: ControllerKind) {
+        self.typed.stick_cal.remove(kind.slug());
+        if let Some(obj) = self.raw.as_object_mut() {
+            let empty = match obj.get_mut("stick_cal").and_then(Value::as_object_mut) {
+                Some(t) => {
+                    t.remove(kind.slug());
+                    t.is_empty()
+                }
+                None => false,
+            };
+            if empty {
+                obj.remove("stick_cal");
+            }
+        }
+    }
+
     pub fn set_rumble_on_connect(&mut self, v: bool) {
         self.typed.rumble_on_connect = v;
         self.raw["rumble_on_connect"] = Value::from(v);

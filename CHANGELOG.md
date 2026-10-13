@@ -44,6 +44,12 @@ To be released as v3.0.0 (after the stick-calibration PR).
 - Settings window (gear) with 一般 (config file, open in Notepad / its
   folder, event log switch, the last 6 events), 搖桿, 觸控板 and 按鍵 tabs.
 - The pixel font Cubic 11 (OFL) is bundled, subset to the UI's characters.
+- Guided stick calibration per controller in 設定 → 搖桿: let go of both
+  sticks for 3 s, rotate them until all eight directions are lit, then 儲存.
+  A capture with the centre too far off or a stick that does not reach far
+  enough is refused. 恢復出廠校正 goes back to the pad's own calibration.
+  Stored in the new optional config key `stick_cal` (configs without it are
+  unchanged).
 
 ### Changed
 

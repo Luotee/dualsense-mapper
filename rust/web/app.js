@@ -7,6 +7,7 @@ import { resetInk } from './board/tags.js';
 import { startLive } from './board/live.js';
 import { startMacros } from './board/macros.js';
 import { startSettings } from './board/settings.js';
+import { startCalibration } from './board/calibration.js';
 
 const board = document.getElementById('board');
 
@@ -31,6 +32,7 @@ wire(board);
 await startLive();
 startMacros(board);
 await startSettings(board);
+startCalibration();
 paint();
 fit();
 addEventListener('resize', fit);

@@ -601,6 +601,51 @@ try {
   await settle(page);
   check('✕ closes the window', (await page.locator('#board .setw').count()) === 0);
 
+  // ── Stick calibration (設定 → 搖桿) ───────────────────────────────────────
+  await page.click('#board [data-pad="dualsense"]');
+  await page.evaluate(() => { window.__mock.sticks = null; });
+  await page.click('#board [data-act="setopen"]');
+  await page.click('#board [data-stab="stick"]');
+  await page.waitForTimeout(150);
+  const dots = await page.locator('#board .stk .sdot').evaluateAll(els => els.map(e => [e.getAttribute('cx'), e.getAttribute('cy')]));
+  check('no pad: centred dots, calibrate disabled', dots.length === 2 && dots.every(d => +d[0] === 0 && +d[1] === 0) &&
+    await page.locator('#board [data-act="calgo"]').isDisabled() && /先連上這支手把/.test(await page.locator('#board #calbar').textContent()), JSON.stringify(dots));
+  await page.evaluate(() => { window.__mock.sticks = { pad: 'dualsense', raw: [0.05, -0.02, 0.05, -0.02], cal: [0.05, -0.02, 0.05, -0.02] }; });
+  await page.waitForTimeout(150);
+  check('pad streaming: calibrate enabled', await page.locator('#board [data-act="calgo"]').isEnabled());
+  await page.click('#board [data-act="calgo"]');
+  await page.waitForTimeout(150);
+  check('step 1 asks to let go of both sticks', /1／3/.test(await page.locator('#board #calbar').textContent()) && /放開兩支搖桿/.test(await page.locator('#board #calbar').textContent()));
+  await page.waitForTimeout(3300);
+  const bar2 = await page.locator('#board #calbar').textContent();
+  check('step 2 after 3 s of rest; crosshair hidden', /2／3/.test(bar2) && /八個方向/.test(bar2) && (await page.locator('#board .stk .xhair').count()) === 0, bar2);
+  await page.evaluate(async () => {
+    for (let a = 0; a <= 720; a += 15) {
+      const x = 0.05 + 0.9 * Math.cos(a * Math.PI / 180), y = -0.02 + 0.9 * Math.sin(a * Math.PI / 180);
+      window.__mock.sticks = { pad: 'dualsense', raw: [x, y, x, y], cal: [x, y, x, y] };
+      await new Promise(r => setTimeout(r, 40));
+    }
+  });
+  await page.waitForTimeout(150);
+  const bar3 = await page.locator('#board #calbar').textContent();
+  check('step 3 shows the result and 重來', /完成/.test(bar3) && /儲存/.test(bar3) && (await page.locator('#board [data-act="calstop"]').textContent()).includes('重來'), bar3);
+  await page.click('#board [data-act="setsave"]');
+  await page.waitForTimeout(200);
+  const sc = await lastCall(page, 'save_stick_cal');
+  check('儲存 sends save_stick_cal with the captured centre', sc?.args?.pad === 'dualsense' && Math.abs(sc.args.cal.left.x.center - 0.05) < 0.01 &&
+    Math.abs(sc.args.cal.left.x.pos - 0.9) < 0.05, JSON.stringify(sc?.args?.cal?.left));
+  await page.click('#board [data-act="setopen"]');
+  await page.click('#board [data-stab="stick"]');
+  await page.click('#board [data-act="calfac"]');
+  await page.waitForTimeout(150);
+  check('恢復出廠校正 → reset_stick_cal', (await lastCall(page, 'reset_stick_cal'))?.args?.pad === 'dualsense');
+  await page.click('#board [data-act="calgo"]');
+  await page.evaluate(() => { window.__mock.sticks = { pad: 'ns2_pro', raw: [0, 0, 0, 0], cal: [0, 0, 0, 0] }; });
+  await page.waitForTimeout(200);
+  check('capture cancels when another pad takes over', /手把換了/.test(await page.locator('#board #calbar').textContent()));
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { window.__mock.sticks = null; });
+
   // @@NEXT-TASKS
 
   const inPageErrors = await page.evaluate(() => window.__mockErrors);

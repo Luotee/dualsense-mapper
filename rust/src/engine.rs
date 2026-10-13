@@ -9,6 +9,7 @@
 //!   * `EngineEvent` — what the loop emits for the activity log.
 
 use crate::config::Config;
+use crate::gamepad::stick_cal::{StickCalTable, StickPositions, StickProbe};
 use crate::gamepad::{ControllerKind, CursorParams, GamepadSource, HubCmd, SourceCmd};
 use crate::keyboard::KeyboardSink;
 use crate::macro_engine::MacroEngine;
@@ -136,6 +137,11 @@ struct HandleInner {
     /// Test-only: sender feeding `warn_rx`. `None` in production.
     #[doc(hidden)]
     fake_warn_tx: Mutex<Option<Sender<String>>>,
+    /// User stick calibration shared with the hub; refreshed from the live
+    /// config at start and on every config generation.
+    stick_cal: StickCalTable,
+    /// The session owner's latest stick positions (raw + corrected).
+    stick_probe: StickProbe,
     /// The virtual Xbox pad. `Weak`: the engine thread owns it, so it is
     /// dropped (and unplugged) when that thread ends, even by unwinding.
     virtual_pad: Weak<Mutex<Box<dyn VirtualPad>>>,
@@ -154,6 +160,12 @@ impl Handle {
     /// engine thread so changes take effect without a config rebuild.
     pub fn cursor_params(&self) -> CursorParams {
         self.inner.cursor_params.clone()
+    }
+
+    /// The session owner's latest stick positions, raw and corrected
+    /// (`None`: no controller connected, or no stick report yet).
+    pub fn stick_positions(&self) -> Option<StickPositions> {
+        self.inner.stick_probe.snapshot()
     }
 
     pub fn set_paused(&self, v: bool) {
@@ -315,11 +327,12 @@ impl Engine {
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<HubCmd>(4);
         // Bounded: workers `try_send`, and each warning is sent at most once.
         let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
-        let src = GamepadSource::new(cursor_params.clone(), cmd_rx, warn_tx)?;
+        let (cal, probe) = (StickCalTable::default(), StickProbe::default());
+        let src = GamepadSource::new(cursor_params.clone(), cmd_rx, warn_tx)?.with_stick_cal(cal.clone(), probe.clone());
         // Dry run synthesizes no OS input: that includes the virtual pad.
         let pad: Box<dyn VirtualPad> =
             if dry_run { Box::new(xinput_sink::NullPad) } else { xinput_sink::platform_pad() };
-        Self::spawn_inner(cfg, dry_run, src, cursor_params, cmd_tx, warn_rx, pad)
+        Self::spawn_inner(cfg, dry_run, src, cursor_params, cmd_tx, warn_rx, pad, cal, probe)
     }
 
     /// Spawn with a fake gamepad source. Events are injected via
@@ -345,10 +358,11 @@ impl Engine {
         let (fake_tx, fake_rx) = unbounded::<crate::gamepad::GamepadEvent>();
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<HubCmd>(4);
         let (source_cmd_tx, source_cmd_rx) = unbounded::<SourceCmd>();
-        let src = GamepadSource::fake_with_disconnect(fake_rx, cmd_rx, source_cmd_tx);
+        let (cal, probe) = (StickCalTable::default(), StickProbe::default());
+        let src = GamepadSource::fake_with_disconnect(fake_rx, cmd_rx, source_cmd_tx).with_stick_cal(cal.clone(), probe.clone());
         let (warn_tx, warn_rx) = crossbeam_channel::bounded::<String>(8);
         let engine = Self::spawn_inner(
-            cfg, /*dry_run=*/true, src, cursor_params, cmd_tx, warn_rx, pad,
+            cfg, /*dry_run=*/true, src, cursor_params, cmd_tx, warn_rx, pad, cal, probe,
         )?;
         // Install the sender into HandleInner.
         *engine.handle.inner.fake_tx.lock().unwrap() = Some(fake_tx);
@@ -365,7 +379,10 @@ impl Engine {
         source_cmd: crossbeam_channel::Sender<HubCmd>,
         warn_rx: Receiver<String>,
         pad: Box<dyn VirtualPad>,
+        stick_cal: StickCalTable,
+        stick_probe: StickProbe,
     ) -> Result<Self> {
+        stick_cal.replace_from(&cfg);
         let key_state = safety::shared();
         let pad: SharedPad = Arc::new(Mutex::new(pad));
         let (event_tx, event_rx) = unbounded::<EngineEvent>();
@@ -387,6 +404,8 @@ impl Engine {
             source_cmd,
             warn_rx,
             fake_warn_tx: Mutex::new(None),
+            stick_cal,
+            stick_probe,
             virtual_pad: Arc::downgrade(&pad),
         });
 
@@ -480,6 +499,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         let current_gen = h.config_generation.load(Ordering::SeqCst);
         if current_gen != last_config_gen {
             let cfg = h.config.read().unwrap();
+            h.stick_cal.replace_from(&cfg);
             mapper.replace_config(cfg.clone());
             last_config_gen = current_gen;
         }

@@ -50,6 +50,7 @@ fn baseline_config() -> Config {
         touchpad_click_freeze_enabled: true,
         mapping_enabled: Default::default(),
         rumble_on_connect: true,
+        stick_cal: Default::default(),
     }
 }
 
