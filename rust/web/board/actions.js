@@ -77,13 +77,16 @@ async function setOff(pad, off) {
   const list = await invoke('set_pad_off', { kind: pad, off });
   if (Array.isArray(list)) state.offPads = new Set(list);
 }
+const modeHooks = [];
+export function onModeChange(f) { modeHooks.push(f); }
 export async function setMode(mode) {
   const pad = state.pad;
   try {
-    if (mode === 'off') { await setOff(pad, true); rerender(); return; }
+    if (mode === 'off') { await setOff(pad, true); modeHooks.forEach(f => f(pad, mode)); rerender(); return; }
     if (state.offPads.has(pad)) await setOff(pad, false);
     const enabled = mode === 'kbm';
     if (state.config.mapping_enabled?.[pad] !== enabled) await invoke('set_mapping_enabled', { kind: pad, enabled });
+    modeHooks.forEach(f => f(pad, mode));
     rerender();
   } catch (e) { state.note = errText(e); rerender(); }
 }

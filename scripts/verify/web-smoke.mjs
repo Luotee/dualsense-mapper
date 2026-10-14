@@ -96,6 +96,8 @@ function tauriMock({ config, version }) {
     prefs: { drawer_open: false, last_tab: null, last_pad: null },
     status: { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense'], off_pads: [] },
     sticks: null,
+    vigem: 'installed',          // get_vigem_status reply
+    vigemAfterInstall: 'installed',
   };
   window.__mock = state;
   window.__mockCalls = [];
@@ -167,6 +169,8 @@ function tauriMock({ config, version }) {
       case 'delete_macro': delete c.macros[a.name]; renameRefs(a.name, null); changed(); return null;
       case 'set_settings': Object.assign(c, clone(a.settings)); changed(); return null;
       case 'set_mapping_enabled': c.mapping_enabled[a.kind] = a.enabled; changed(); return null;
+      case 'get_vigem_status': return state.vigem;
+      case 'install_vigem': await new Promise(r => setTimeout(r, 150)); state.vigem = state.vigemAfterInstall; return state.vigem;
       case 'set_pad_off': {
         // Runtime only (no config-changed); the engine re-sends the status.
         const off = new Set(state.status.off_pads || []);
@@ -391,6 +395,55 @@ try {
   check('off_pads from controller-status selects 關', (await modeOf()) === 'off');
   await page.click('#board .omode [data-mode="kbm"]');
   await settle(page);
+  // ViGEmBus prompt (Switch 2 Pro, Xbox).
+  const pop = () => page.locator('#board .vgpop');
+  await page.evaluate(() => { window.__mock.vigem = 'missing'; });
+  await page.click('#board .omode [data-mode="pad"]');
+  await settle(page);
+  check('Xbox with ViGEmBus missing opens the popover', (await pop().count()) === 1 && /這台還沒有 ViGEmBus/.test(await pop().textContent()) && (await countCalls(page, 'get_vigem_status')) >= 1);
+  await page.screenshot({ path: path.join(outDir, 'web-vigem.png') });
+  check('popover has 稍後 / 改回鍵鼠 / 安裝 ViGEmBus',
+    JSON.stringify(await page.locator('#board .vgpop button').allTextContents()) === JSON.stringify(['稍後', '改回鍵鼠', '安裝 ViGEmBus']));
+  await page.click('#board [data-act="vglater"]');
+  await settle(page);
+  await page.screenshot({ path: path.join(outDir, 'web-vigem-bang.png') });
+  check('稍後 closes it and leaves the !', (await pop().count()) === 0 && (await page.locator('#board .hdr .vgbang').count()) === 1);
+  await page.click('#board .hdr .vgbang');
+  await settle(page);
+  check('the ! reopens it', (await pop().count()) === 1);
+  await page.evaluate(() => { window.__mock.vigemAfterInstall = 'missing'; });
+  await page.click('#board [data-act="vginstall"]');
+  await page.waitForTimeout(40);
+  check('安裝 shows 安裝中…', ((await page.locator('#board [data-act="vginstall"]').textContent()) || '').trim() === '安裝中…');
+  await page.waitForTimeout(300);
+  check('a failed install keeps the popover with an error line', (await pop().count()) === 1 && (await page.locator('#board .vgpop .vgerr').count()) === 1);
+  await page.evaluate(() => { window.__mock.vigemAfterInstall = 'installed'; });
+  await page.click('#board [data-act="vginstall"]');
+  await page.waitForTimeout(350);
+  check('安裝 calls install_vigem and closes on installed', (await countCalls(page, 'install_vigem')) === 2 && (await pop().count()) === 0 && (await page.locator('#board .hdr .vgbang').count()) === 0);
+  check('installed → Xbox banner shows', (await banner()) === '遊戲看到的是 Xbox 手把；下面的鍵鼠綁定這時不作用', await banner());
+  // 改回鍵鼠 from the popover.
+  await page.click('#board .omode [data-mode="kbm"]');
+  await settle(page);
+  await page.evaluate(() => { window.__mock.vigem = 'missing'; });
+  await page.click('#board .omode [data-mode="pad"]');
+  await settle(page);
+  await page.click('#board [data-act="vgkbm"]');
+  await settle(page);
+  const back = await lastCall(page, 'set_mapping_enabled');
+  check('改回鍵鼠 sends set_mapping_enabled(ns2_pro,true)', back?.args?.kind === 'ns2_pro' && back.args.enabled === true && (await pop().count()) === 0, JSON.stringify(back?.args));
+  await page.evaluate(() => { window.__mock.vigem = 'installed'; });
+  await page.click('#board .omode [data-mode="pad"]');
+  await settle(page);
+  check('installed → no popover', (await pop().count()) === 0 && (await page.locator('#board .hdr .vgbang').count()) === 0);
+  await page.evaluate(() => { window.__mockEmit('controller-status', { connected: true, kind: 'ns2_pro', connected_pads: ['dualsense', 'ns2_pro'], warnings: ['vigem_missing'], off_pads: [] }); });
+  await settle(page);
+  check('live vigem_missing warning shows the !', (await page.locator('#board .hdr .vgbang').count()) === 1);
+  await page.evaluate(() => { window.__mockEmit('controller-status', { connected: true, kind: 'dualsense', connected_pads: ['dualsense'], warnings: [], off_pads: [] }); });
+  await page.click('#board [data-pad="ns2_pro"]');
+  await page.click('#board .omode [data-mode="kbm"]');
+  await settle(page);
+
   check('header fits 980 px (no overflow)', await page.evaluate(() => { const h = document.querySelector('#board .hdr'); return h.scrollWidth <= h.clientWidth; }));
   await page.click('#board [data-pad="dualsense"]');
   await settle(page);

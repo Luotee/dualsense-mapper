@@ -8,6 +8,7 @@ export const state = {
   config: null,
   connected: new Set(),
   offPads: new Set(), // pads switched off for this session (header 關; runtime only)
+  warnings: [],       // controller status warnings (e.g. vigem_missing)
   pad: 'dualsense',
   sel: null,          // slot waiting for a key (capture)
   picked: null,       // palette tile picked by click, waiting for a slot
@@ -78,6 +79,7 @@ export async function init() {
   state.config = config;
   state.connected = connectedFrom(status);
   state.offPads = offFrom(status);
+  state.warnings = (status && status.warnings) || [];
   state.prefs = prefs || {};
   state.version = version || '';
   state.configPath = configPath || '';
@@ -93,6 +95,7 @@ export async function init() {
     const before = state.connected;
     state.connected = connectedFrom(s);
     state.offPads = offFrom(s, state.offPads);
+    state.warnings = (s && s.warnings) || [];
     const fresh = [...state.connected].filter(p => !before.has(p));
     if (fresh.length) await setPad(fresh[0]);   // a pad that connects is auto-selected (spec 4.5)
     rerender();

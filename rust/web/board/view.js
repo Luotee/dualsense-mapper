@@ -10,6 +10,7 @@ import { keyboardHTML, mouseHTML, macroBoxHTML } from './palette.js';
 import { ICON } from './icons.js';
 import { editorHTML } from './macros.js';
 import { settingsHTML } from './settings.js';
+import { bangHTML, popHTML, vigemBlocksBanner } from './vigem.js';
 
 export const CAPTURE_TEXT = '按鍵鼠上的鍵，或點下面的方塊（Esc 取消）';
 
@@ -79,12 +80,12 @@ export function render(st) {
       PAD_NAMES[p] + '</span></button>' +
       (c ? '<button type="button" class="pwr" data-act="cut" data-cutpad="' + p + '" aria-label="斷開 ' + PAD_NAMES[p] + '" title="斷開手把">' + ICON.power + '</button>' : '') + '</span>';
   }
-  h += '</div><div class="sp"></div>' + sw('rumble', '連線震動', cfg.rumble_on_connect !== false) + omodeHTML(st, pad) +
+  h += '</div><div class="sp"></div>' + sw('rumble', '連線震動', cfg.rumble_on_connect !== false) + omodeHTML(st, pad) + bangHTML() +
     '<button type="button" class="gear" data-act="setopen" aria-label="設定" title="設定">' + ICON.gear + '</button></header>';
   h += '<div class="stage"></div>' + padSvg(pad);
   const om = outputMode(st, pad);
   if (om === 'off') h += '<div class="obanner gold" role="status">' + ICON.pause + '<span>' + OFF_BANNER + '</span></div>';
-  else if (om === 'pad') h += '<div class="obanner white" role="status"><span>' + padBanner(pad) + '</span></div>';
+  else if (om === 'pad' && !vigemBlocksBanner()) h += '<div class="obanner white" role="status"><span>' + padBanner(pad) + '</span></div>';
   const hot = {};
   for (const g of L.groups) {
     if (g.q) h += '<div class="qcap" style="left:' + (g.x - 124) + 'px;top:' + (g.y - 82) + 'px">' + qcapHTML(pad, g.q, g.q === 'L' ? modes.l : modes.r) + '</div>';
@@ -104,6 +105,7 @@ export function render(st) {
   const waiting = st.sel !== null && !st.medit;
   h += '<section class="pal">' + (waiting ? '<div class="capbar" role="status">' + CAPTURE_TEXT + '</div>' : '') + keyboardHTML(st) +
     '<div class="m3s' + lock + '">' + mouseHTML(st) + '</div>' + macroBoxHTML(st, lock) + '</section>';
+  h += popHTML();
   if (st.medit) h += editorHTML(st);
   if (st.setOpen) h += settingsHTML(st);
   h += '<footer class="ftr"><button type="button" class="b-def" data-act="reset">恢復預設</button><button type="button" class="b-clr" data-act="clear">全部清除</button>' +

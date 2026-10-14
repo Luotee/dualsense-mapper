@@ -8,6 +8,7 @@ import { startLive } from './board/live.js';
 import { startMacros } from './board/macros.js';
 import { startSettings } from './board/settings.js';
 import { startCalibration } from './board/calibration.js';
+import { startVigem, maybeProbe } from './board/vigem.js';
 
 const board = document.getElementById('board');
 
@@ -20,6 +21,7 @@ function paint() {
   // 關 and 手把 both dim the board; it stays editable (spec v3.2.0 §1).
   board.className = 'mock' + (outputMode(state, state.pad) !== 'kbm' ? ' off' : '');
   board.innerHTML = render(state);
+  maybeProbe();
 }
 
 onRender(paint);
@@ -29,6 +31,7 @@ await startLive();
 startMacros(board);
 await startSettings(board);
 startCalibration();
+startVigem();
 paint();
 fit();
 addEventListener('resize', fit);

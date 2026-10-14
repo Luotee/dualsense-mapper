@@ -92,6 +92,8 @@ function tauriMock({ config, version }) {
       case 'get_app_version': return version;
       case 'get_config_path': return 'D:\\Games\\PadToKBM\\padtokbm.json';
       case 'set_pad_off': return [];
+      case 'get_vigem_status': return 'installed';
+      case 'install_vigem': return 'installed';
       default: return null;
     }
   }

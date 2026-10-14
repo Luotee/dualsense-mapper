@@ -244,3 +244,14 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:no
 .mock .obanner{position:absolute;left:50%;top:68px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;white-space:nowrap;border-radius:8px;z-index:3;pointer-events:none}
 .mock .obanner.gold{height:34px;padding:0 16px;background:var(--gold);border:2px solid #7a5c00;color:#3a2a00;font-size:14px}
 .mock .obanner.white{height:30px;padding:0 14px;background:var(--white);border:2px solid var(--navy2);color:var(--ink);font-size:12px}
+
+/* ViGEmBus prompt (mockup output-mode card B). */
+.mock .vgbang{display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border-radius:50%;background:var(--gold);border:2px solid #7a5c00;color:#3a2a00;font:inherit;font-size:11px;line-height:1;cursor:pointer;flex:none;margin-left:-6px}
+.mock .vgpop{position:absolute;right:58px;top:50px;width:300px;z-index:6;background:var(--white);border:3px solid var(--navy2);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.3);padding:8px 10px;font-size:11px;line-height:1.55;color:var(--ink)}
+.mock .vgpop::before{content:'';position:absolute;top:-9px;right:40px;width:12px;height:12px;background:var(--white);border-left:3px solid var(--navy2);border-top:3px solid var(--navy2);transform:rotate(45deg)}
+.mock .vgpop b{font-weight:400;color:var(--pinkhi)}
+.mock .vgpop .vgerr{margin-top:4px;color:var(--red)}
+.mock .vgpop .vgbtns{display:flex;gap:6px;margin-top:6px;justify-content:flex-end}
+.mock .vgpop .mini{font:inherit;font-size:11px;display:inline-flex;align-items:center;height:22px;padding:0 9px;border:2px solid var(--navy2);border-radius:6px;background:#e8ebf2;color:var(--ink);cursor:pointer}
+.mock .vgpop .mini.go{background:var(--pinkhi);border-color:#6e2a46;color:var(--white)}
+.mock .vgpop .mini:disabled{opacity:.6;cursor:default}
