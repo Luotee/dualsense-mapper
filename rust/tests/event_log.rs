@@ -12,17 +12,23 @@ use std::time::Duration;
 
 #[test]
 fn format_line_shape() {
-    let line = format_line(1_760_344_919_352, "按下", "送出 Alt 按下");
+    let line = format_line(1_760_344_919_352, "按下", "送出 Alt 按下", "btn:0");
     let cols: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
     assert!(line.ends_with('\n'));
-    assert_eq!(cols.len(), 3, "{line:?}");
-    assert_eq!(&cols[1..], ["按下", "送出 Alt 按下"]);
+    assert_eq!(cols.len(), 4, "{line:?}");
+    assert_eq!(&cols[1..], ["按下", "送出 Alt 按下", "src=btn:0"]);
     // "YYYY-MM-DD HH:MM:SS.mmm" local time; milliseconds survive.
     let ts = cols[0];
     assert_eq!(ts.len(), 23, "{ts}");
     assert_eq!(&ts[4..5], "-");
     assert_eq!(&ts[10..11], " ");
     assert_eq!(&ts[19..], ".352");
+}
+
+#[test]
+fn log_line_has_source_column() {
+    let line = format_line(0, "按下", "送出 J 按下", "macro:連發");
+    assert_eq!(line.trim_end().rsplit('\t').next(), Some("src=macro:連發"));
 }
 
 #[test]
@@ -87,7 +93,7 @@ fn engine_writes_key_events_when_enabled() {
     std::thread::sleep(Duration::from_millis(150));
     engine.shutdown();
     let text = fs::read_to_string(dir.path().join(LOG_FILE)).expect("log file written");
-    assert!(text.lines().any(|l| l.split('\t').nth(1) == Some("按下")), "{text}");
+    assert!(text.lines().any(|l| l.split('\t').nth(1) == Some("按下") && l.ends_with("\tsrc=btn:0")), "{text}");
     assert!(text.lines().any(|l| l.split('\t').nth(1) == Some("放開")), "{text}");
 }
 

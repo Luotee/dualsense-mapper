@@ -255,3 +255,13 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:no
 .mock .vgpop .mini{font:inherit;font-size:11px;display:inline-flex;align-items:center;height:22px;padding:0 9px;border:2px solid var(--navy2);border-radius:6px;background:#e8ebf2;color:var(--ink);cursor:pointer}
 .mock .vgpop .mini.go{background:var(--pinkhi);border-color:#6e2a46;color:var(--white)}
 .mock .vgpop .mini:disabled{opacity:.6;cursor:default}
+
+/* 最近的事件 source chips (mockup next-ux Q2-A). */
+.mock .lr .lx{display:flex;align-items:center;gap:5px;overflow:hidden}
+.mock .lr .arr{color:var(--mute)}
+.mock .chip{display:inline-flex;align-items:center;justify-content:center;height:16px;box-sizing:border-box;flex:none;line-height:0}
+.mock .chip svg{display:block;overflow:visible}
+.mock .chip.face{width:16px;border-radius:50%;background:var(--pink);border:1.5px solid var(--pinkd);color:#fde6ef;padding-left:0}
+.mock .chip.pill{padding:0 6px;border-radius:999px;background:#e1e4ea;border:1.5px solid #9aa1b0;color:var(--ink);min-width:16px}
+.mock .chip.mac{padding:0 7px;border-radius:999px;background:var(--navy);border:1.5px solid var(--navy2);color:var(--white);font-size:11px;line-height:13px}
+.mock .chip.txt{font-size:11px;line-height:13px}

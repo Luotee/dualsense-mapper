@@ -5,8 +5,9 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyAction {
-    Press(String),       // key value as written in config (canonical)
-    Release(String),
+    /// Key value as written in config (canonical), and what sent it.
+    Press(String, Source),
+    Release(String, Source),
     MacroStart { name: String, source_id: u32 },
     MacroStop { source_id: u32 },
     MousePress(MouseButton),
@@ -19,6 +20,24 @@ pub enum KeyAction {
     /// quadrant change, forwarded to Tauri as a diagnostic event for GUI
     /// hover rendering. `quadrant = 255` is the sentinel for "finger lifted".
     TouchpadHover { raw_x: u16, raw_y: u16, quadrant: u32 },
+}
+
+/// What sent a key: a pad button (its id) or a running macro (its name).
+/// Shown in 最近的事件 and written to the event log (v3.2.0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Button(u32),
+    Macro(String),
+}
+
+impl Source {
+    /// `btn:0` / `macro:連發` (event log column).
+    pub fn tag(&self) -> String {
+        match self {
+            Source::Button(id) => format!("btn:{id}"),
+            Source::Macro(name) => format!("macro:{name}"),
+        }
+    }
 }
 
 pub struct Mapper {
@@ -282,7 +301,7 @@ fn press_actions(id: u32, binding: &Binding) -> Vec<KeyAction> {
     match binding {
         Binding::Key(k) => {
             tracing::info!(id, key = %k, "press");
-            vec![KeyAction::Press(k.clone())]
+            vec![KeyAction::Press(k.clone(), Source::Button(id))]
         }
         Binding::Macro(n) => {
             tracing::info!(id, macro_name = %n, "macro start");
@@ -303,7 +322,7 @@ fn release_actions(id: u32, binding: &Binding) -> Vec<KeyAction> {
     match binding {
         Binding::Key(k) => {
             tracing::info!(id, key = %k, "release");
-            vec![KeyAction::Release(k.clone())]
+            vec![KeyAction::Release(k.clone(), Source::Button(id))]
         }
         Binding::Macro(_) => {
             tracing::info!(id, "macro stop");
@@ -377,13 +396,21 @@ mod tests {
     }
 
     #[test]
+    fn press_carries_button_source() {
+        let cfg = cfg_with_overrides(vec![(3, Binding::Key("j".into()))]);
+        let mut m = Mapper::new(cfg);
+        assert_eq!(m.handle(GamepadEvent::ButtonDown(3)), vec![KeyAction::Press("j".into(), Source::Button(3))]);
+        assert_eq!(m.handle(GamepadEvent::ButtonUp(3)), vec![KeyAction::Release("j".into(), Source::Button(3))]);
+    }
+
+    #[test]
     fn physical_key_press_release() {
         let cfg = cfg_with_overrides(vec![(0, Binding::Key("x".into()))]);
         let mut m = Mapper::new(cfg);
         assert_eq!(m.handle(GamepadEvent::ButtonDown(0)),
-                   vec![KeyAction::Press("x".into())]);
+                   vec![KeyAction::Press("x".into(), Source::Button(0))]);
         assert_eq!(m.handle(GamepadEvent::ButtonUp(0)),
-                   vec![KeyAction::Release("x".into())]);
+                   vec![KeyAction::Release("x".into(), Source::Button(0))]);
     }
 
     #[test]
@@ -404,7 +431,7 @@ mod tests {
         // cross deadzone negative — press 17
         assert_eq!(
             m.handle(GamepadEvent::Stick { axis: 0, value: -0.9 }),
-            vec![KeyAction::Press("Left".into())]
+            vec![KeyAction::Press("Left".into(), Source::Button(17))]
         );
 
         // still active — nothing further
@@ -413,7 +440,7 @@ mod tests {
         // return inside deadzone — release 17
         assert_eq!(
             m.handle(GamepadEvent::Stick { axis: 0, value: 0.0 }),
-            vec![KeyAction::Release("Left".into())]
+            vec![KeyAction::Release("Left".into(), Source::Button(17))]
         );
     }
 
@@ -466,20 +493,20 @@ mod tests {
         ]);
         let mut m = Mapper::new(cfg);
         assert_eq!(m.handle(GamepadEvent::ButtonDown(11)),
-                   vec![KeyAction::Press("Up".into())]);
+                   vec![KeyAction::Press("Up".into(), Source::Button(11))]);
         assert_eq!(m.handle(GamepadEvent::Stick { axis: 1, value: 0.9 }),
-                   vec![KeyAction::Press("Up".into())]);
+                   vec![KeyAction::Press("Up".into(), Source::Button(15))]);
         // Releasing one MUST still produce a Release action — refcount logic in
         // safety.rs decides whether to actually let the key go up.
         assert_eq!(m.handle(GamepadEvent::ButtonUp(11)),
-                   vec![KeyAction::Release("Up".into())]);
+                   vec![KeyAction::Release("Up".into(), Source::Button(11))]);
     }
 
     // ─── Per-pad tables, trigger modes, quick pages ─────────────────────────
 
     fn k(s: &str) -> Binding { Binding::Key(s.into()) }
-    fn press(s: &str) -> Vec<KeyAction> { vec![KeyAction::Press(s.into())] }
-    fn release(s: &str) -> Vec<KeyAction> { vec![KeyAction::Release(s.into())] }
+    fn press(id: u32, s: &str) -> Vec<KeyAction> { vec![KeyAction::Press(s.into(), Source::Button(id))] }
+    fn release(id: u32, s: &str) -> Vec<KeyAction> { vec![KeyAction::Release(s.into(), Source::Button(id))] }
     fn down(id: u32) -> GamepadEvent { GamepadEvent::ButtonDown(id) }
     fn up(id: u32) -> GamepadEvent { GamepadEvent::ButtonUp(id) }
     fn trig(axis: u32, value: f32) -> GamepadEvent { GamepadEvent::Trigger { axis, value } }
@@ -508,10 +535,10 @@ mod tests {
         let mut m = mapper();
         m.set_pad(Some(ControllerKind::DualSense));
         assert!(m.handle(trig(4, 1.0)).is_empty());
-        assert_eq!(m.handle(down(11)), press("F1"));
-        assert_eq!(m.handle(up(11)), release("F1"));
+        assert_eq!(m.handle(down(11)), press(11, "F1"));
+        assert_eq!(m.handle(up(11)), release(11, "F1"));
         assert!(m.handle(trig(4, 0.0)).is_empty());
-        assert_eq!(m.handle(down(11)), press("Up"), "page gone with the trigger");
+        assert_eq!(m.handle(down(11)), press(11, "Up"), "page gone with the trigger");
     }
 
     #[test]
@@ -534,25 +561,25 @@ mod tests {
         set(&mut cfg, ControllerKind::DualSense, Page::Base, 9, k("q"));
         let mut m = Mapper::new(cfg);
         m.handle(trig(4, 1.0));
-        assert_eq!(m.handle(down(9)), press("q"));
-        assert_eq!(m.handle(up(9)), release("q"));
+        assert_eq!(m.handle(down(9)), press(9, "q"));
+        assert_eq!(m.handle(up(9)), release(9, "q"));
     }
 
     #[test]
     fn release_after_trigger_up_uses_page_binding() {
         let mut m = mapper();
         m.handle(trig(4, 1.0));
-        assert_eq!(m.handle(down(11)), press("F1"));
+        assert_eq!(m.handle(down(11)), press(11, "F1"));
         assert!(m.handle(trig(4, 0.0)).is_empty());
-        assert_eq!(m.handle(up(11)), release("F1"));
+        assert_eq!(m.handle(up(11)), release(11, "F1"));
     }
 
     #[test]
     fn press_before_trigger_keeps_base_binding() {
         let mut m = mapper();
-        assert_eq!(m.handle(down(11)), press("Up"));
+        assert_eq!(m.handle(down(11)), press(11, "Up"));
         assert!(m.handle(trig(4, 1.0)).is_empty());
-        assert_eq!(m.handle(up(11)), release("Up"));
+        assert_eq!(m.handle(up(11)), release(11, "Up"));
     }
 
     #[test]
@@ -561,7 +588,7 @@ mod tests {
         m.handle(trig(4, 1.0));
         m.handle(trig(5, 1.0));
         m.handle(trig(5, 0.0));
-        assert_eq!(m.handle(down(11)), press("F1"));
+        assert_eq!(m.handle(down(11)), press(11, "F1"));
     }
 
     #[test]
@@ -569,12 +596,12 @@ mod tests {
         let mut m = mapper();
         m.handle(trig(4, 1.0));
         m.handle(trig(5, 1.0));
-        assert_eq!(m.handle(down(11)), press("F2"));
-        assert_eq!(m.handle(up(11)), release("F2"));
+        assert_eq!(m.handle(down(11)), press(11, "F2"));
+        assert_eq!(m.handle(up(11)), release(11, "F2"));
         // Re-pressing L while R is still held makes L the last one.
         m.handle(trig(4, 0.0));
         m.handle(trig(4, 1.0));
-        assert_eq!(m.handle(down(11)), press("F1"));
+        assert_eq!(m.handle(down(11)), press(11, "F1"));
     }
 
     #[test]
@@ -583,21 +610,21 @@ mod tests {
         cfg.pad_mut(ControllerKind::DualSense).trigger_mode.l = TriggerMode::Key;
         set(&mut cfg, ControllerKind::DualSense, Page::Base, 23, k("Q"));
         let mut m = Mapper::new(cfg);
-        assert_eq!(m.handle(trig(4, 1.0)), press("Q"));
-        assert_eq!(m.handle(down(11)), press("Up"), "quick_l ignored in key mode");
-        assert_eq!(m.handle(up(11)), release("Up"));
-        assert_eq!(m.handle(trig(4, 0.0)), release("Q"));
+        assert_eq!(m.handle(trig(4, 1.0)), press(23, "Q"));
+        assert_eq!(m.handle(down(11)), press(11, "Up"), "quick_l ignored in key mode");
+        assert_eq!(m.handle(up(11)), release(11, "Up"));
+        assert_eq!(m.handle(trig(4, 0.0)), release(23, "Q"));
     }
 
     #[test]
     fn rebind_while_held_releases_original_key() {
         let mut m = mapper();
-        assert_eq!(m.handle(down(11)), press("Up"));
+        assert_eq!(m.handle(down(11)), press(11, "Up"));
         let mut cfg = quick_cfg();
         set(&mut cfg, ControllerKind::DualSense, Page::Base, 11, k("W"));
         m.replace_config(cfg);
-        assert_eq!(m.handle(up(11)), release("Up"));
-        assert_eq!(m.handle(down(11)), press("W"));
+        assert_eq!(m.handle(up(11)), release(11, "Up"));
+        assert_eq!(m.handle(down(11)), press(11, "W"));
     }
 
     #[test]
@@ -609,7 +636,7 @@ mod tests {
         set(&mut cfg, ControllerKind::DualSense, Page::Base, 23, k("Q"));
         m.replace_config(cfg);
         assert!(m.handle(trig(4, 0.0)).is_empty(), "a page press never sent a key, so its release sends none");
-        assert_eq!(m.handle(down(11)), press("Up"));
+        assert_eq!(m.handle(down(11)), press(11, "Up"));
     }
 
     #[test]
@@ -617,13 +644,13 @@ mod tests {
         let mut cfg = quick_cfg();
         set(&mut cfg, ControllerKind::NsPro, Page::Base, 11, k("W"));
         let mut m = Mapper::new(cfg);
-        assert_eq!(m.handle(down(11)), press("Up"), "no pad: dualsense table");
+        assert_eq!(m.handle(down(11)), press(11, "Up"), "no pad: dualsense table");
         m.handle(up(11));
         m.set_pad(Some(ControllerKind::NsPro));
-        assert_eq!(m.handle(down(11)), press("W"));
+        assert_eq!(m.handle(down(11)), press(11, "W"));
         m.handle(up(11));
         m.set_pad(None);
-        assert_eq!(m.handle(down(11)), press("Up"));
+        assert_eq!(m.handle(down(11)), press(11, "Up"));
     }
 
     #[test]
@@ -633,10 +660,10 @@ mod tests {
         assert!(m.handle(down(23)).is_empty());
         assert!(m.handle(trig(4, 1.0)).is_empty());
         assert!(m.handle(up(23)).is_empty());
-        assert_eq!(m.handle(down(11)), press("F1"), "still held: axis active");
-        assert_eq!(m.handle(up(11)), release("F1"));
+        assert_eq!(m.handle(down(11)), press(11, "F1"), "still held: axis active");
+        assert_eq!(m.handle(up(11)), release(11, "F1"));
         assert!(m.handle(trig(4, 0.0)).is_empty());
-        assert_eq!(m.handle(down(11)), press("Up"), "both sources released");
+        assert_eq!(m.handle(down(11)), press(11, "Up"), "both sources released");
     }
 
     #[test]
@@ -646,10 +673,10 @@ mod tests {
         set(&mut cfg, ControllerKind::NsPro, Page::Base, 24, k("Shift"));
         let mut m = Mapper::new(cfg);
         m.set_pad(Some(ControllerKind::NsPro));
-        assert_eq!(m.handle(down(24)), press("Shift"));
+        assert_eq!(m.handle(down(24)), press(24, "Shift"));
         assert!(m.handle(trig(5, 1.0)).is_empty());
         assert!(m.handle(trig(5, 0.0)).is_empty(), "digital still down");
-        assert_eq!(m.handle(up(24)), release("Shift"));
+        assert_eq!(m.handle(up(24)), release(24, "Shift"));
     }
 
     #[test]
@@ -678,11 +705,11 @@ mod tests {
         set(&mut cfg, ControllerKind::NsPro, Page::Base, 11, k("W"));
         let mut m = Mapper::new(cfg);
         m.set_pad(Some(ControllerKind::NsPro));
-        assert_eq!(m.handle(down(11)), press("W"));
+        assert_eq!(m.handle(down(11)), press(11, "W"));
         m.handle(trig(5, 1.0));
         m.reset_input_state();
         assert!(m.handle(up(11)).is_empty(), "everything was already released by the engine");
-        assert_eq!(m.handle(down(11)), press("W"), "same pad, no page, a new press goes through");
+        assert_eq!(m.handle(down(11)), press(11, "W"), "same pad, no page, a new press goes through");
         assert!(m.handle(trig(5, 1.0)).is_empty(), "trigger state forgotten: a fresh page press");
         assert_eq!(m.take_visual_transitions().last(), Some(&(24, true)));
     }

@@ -3,7 +3,8 @@
 
 import { invoke, listen } from '../ipc.js';
 import { state, rerender } from './store.js';
-import { esc } from './tags.js';
+import { esc, tagSvg } from './tags.js';
+import { layoutFor, slotsOf } from './layout.js';
 import { ICON } from './icons.js';
 import { hook, selectSlot } from './events.js';
 import { settingsFrom } from './actions.js';
@@ -19,15 +20,42 @@ function stamp(ms) {
   const d = new Date(ms || Date.now()), p = (n, w = 2) => String(n).padStart(w, '0');
   return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
 }
-function log(kind, text, ms) {
-  LOG.push([stamp(ms), kind, text]);
+// `src`: what sent it — { button: id } or { macro: name } (v3.2.0); the
+// chip is drawn for the pad selected when the row is shown.
+function log(kind, text, ms, src = null) {
+  LOG.push([stamp(ms), kind, text, src]);
   if (LOG.length > 40) LOG.shift();
   const box = document.querySelector('#board #logrows');
   if (box) box.innerHTML = logRows(6);
 }
+// The board's corner tag of each button id, per pad (both triggers as
+// single slots so 23 / 24 have one).
+const TAGS = {};
+function tagOf(pad, id) {
+  if (!TAGS[pad]) {
+    TAGS[pad] = {};
+    for (const sl of slotsOf(layoutFor(pad, { l: 'key', r: 'key' }))) if (/^\d+$/.test(sl.key)) TAGS[pad][sl.key] = sl.tag;
+  }
+  return TAGS[pad][String(id)];
+}
+function chipHTML(src) {
+  if (!src) return '';
+  if (src.macro !== undefined) return '<span class="chip mac">' + esc(src.macro) + '</span>';
+  if (src.button === undefined) return '';
+  const tag = tagOf(state.pad, src.button);
+  if (!tag) return '<span class="chip pill">' + esc(String(src.button)) + '</span>';
+  const face = src.button >= 0 && src.button <= 3;
+  // Drawn tags (PlayStation symbols, stick / touchpad icons) as the board
+  // draws them; text tags (L1, A, Share…) as plain text.
+  const drawn = /^(PS|S|T):/.test(tag);
+  return '<span class="chip ' + (face ? 'face' : 'pill') + (drawn ? '' : ' txt') + '">' + (drawn ? tagSvg(tag) : esc(tag)) + '</span>';
+}
 function logRows(n) {
-  return LOG.slice(-n).reverse().map(r => '<div class="lr"><span class="lt">' + r[0] + '</span><span class="lk k-' + r[1] + '">' + r[1] +
-    '</span><span class="lx">' + esc(r[2]) + '</span></div>').join('');
+  return LOG.slice(-n).reverse().map(r => {
+    const chip = chipHTML(r[3]);
+    return '<div class="lr"><span class="lt">' + r[0] + '</span><span class="lk k-' + r[1] + '">' + r[1] + '</span><span class="lx">' +
+      (chip ? chip + '<span class="arr">→</span>' : '') + esc(r[2]) + '</span></div>';
+  }).join('');
 }
 
 // ─── Touchpad finger (from touchpad-hover / touchpad-click raw positions) ────
@@ -233,9 +261,9 @@ export async function startSettings(board) {
   await listen('activity', p => {
     if (p.kind === 'emit') {
       const t = keyToTile(p.key), shown = LABEL[t] || t;   // the name printed on the palette key
-      log(p.action === 'down' ? '按下' : '放開', '送出 ' + shown + (p.action === 'down' ? ' 按下' : ' 放開'), p.ts_ms);
+      log(p.action === 'down' ? '按下' : '放開', '送出 ' + shown + (p.action === 'down' ? ' 按下' : ' 放開'), p.ts_ms, p.source || null);
     }
-    else if (p.kind === 'macro-start') log('巨集', '巨集「' + p.name + '」開始', p.ts_ms);
+    else if (p.kind === 'macro-start') log('巨集', '巨集「' + p.name + '」開始', p.ts_ms, p.button === undefined ? null : { button: p.button });
     else if (p.kind === 'macro-end') log('巨集', '巨集「' + p.name + '」結束', p.ts_ms);
   });
   let lastKind = null;

@@ -658,6 +658,23 @@ try {
   await settle(page);
   const rows = await page.locator('#board #logrows .lr').allTextContents();
   check('最近的事件: at most 6 rows, newest first', rows.length === 6 && /K7/i.test(rows[0]) && /放開/.test(rows[0]), rows.slice(0, 2).join(' | '));
+  // v3.2.0: each row names its source (button glyph chip / macro chip).
+  await page.evaluate(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'j', action: 'down', source: { button: 3 } }));
+  await settle(page);
+  const r0 = page.locator('#board #logrows .lr').first();
+  check('activity row shows the button chip', (await r0.locator('.chip.face svg').count()) === 1 && /→\s*送出 J 按下/.test(await r0.textContent()), await r0.innerHTML());
+  await page.evaluate(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'Space', action: 'down', source: { button: 9 } }));
+  await settle(page);
+  check('non-face button: grey pill with its tag', ((await page.locator('#board #logrows .lr').first().locator('.chip.pill').textContent()) || '').trim() === 'L1');
+  await page.evaluate(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'j', action: 'up', source: { macro: '連發' } }));
+  await settle(page);
+  const r1 = page.locator('#board #logrows .lr').first();
+  check('macro row shows the macro chip', ((await r1.locator('.chip.mac').textContent()) || '').trim() === '連發' && /→\s*送出 J 放開/.test(await r1.textContent()), await r1.innerHTML());
+  await page.evaluate(() => window.__mockEmit('activity', { ts_ms: Date.now(), kind: 'macro-start', name: '連發', button: 0 }));
+  await settle(page);
+  const r2 = page.locator('#board #logrows .lr').first();
+  await page.screenshot({ path: path.join(outDir, 'web-events.png') });
+  check('macro start row: button chip → 巨集「連發」開始', (await r2.locator('.chip.face').count()) === 1 && /→\s*巨集「連發」開始/.test(await r2.textContent()), await r2.textContent());
   for (const t of ['stick', 'tp', 'timing', 'gen']) {
     await page.click(`#board [data-stab="${t}"]`);
     await settle(page);

@@ -14,7 +14,7 @@ use crate::gamepad::stick_cal::{StickCalTable, StickPositions, StickProbe};
 use crate::gamepad::{ControllerKind, CursorParams, GamepadSource, HubCmd, SourceCmd};
 use crate::keyboard::KeyboardSink;
 use crate::macro_engine::MacroEngine;
-use crate::mapper::{KeyAction, Mapper};
+use crate::mapper::{KeyAction, Mapper, Source};
 use crate::mouse::MouseSink;
 use crate::safety::{self, SharedKeyState};
 use crate::virtual_pad::XState;
@@ -46,8 +46,10 @@ pub enum EngineEvent {
     ControllerDisconnected,
     ButtonDown { id: u32 },
     ButtonUp   { id: u32 },
-    KeyEmit    { ts_ms: u64, key: String, action: &'static str /* "down"|"up" */ },
-    MacroStart { ts_ms: u64, name: String },
+    /// `source`: the button or macro that sent the key (v3.2.0).
+    KeyEmit    { ts_ms: u64, key: String, action: &'static str /* "down"|"up" */, source: Source },
+    /// `button`: the pad button that started it.
+    MacroStart { ts_ms: u64, name: String, button: u32 },
     MacroEnd   { ts_ms: u64, name: String, completed: bool },
     /// Diagnostic — emitted once per touchpad click rising edge with
     /// the raw finger position captured at that instant.
@@ -944,34 +946,38 @@ fn execute_action(
             .as_millis() as u64
     };
     match action {
-        KeyAction::Press(k) => {
+        KeyAction::Press(k, src) => {
             let _ = sink.press(k);
             let ts_ms = now_ms();
-            elog.append(cfg.log_events, &event_log::format_line(ts_ms, "按下", &format!("送出 {k} 按下")));
+            elog.append(cfg.log_events, &event_log::format_line(ts_ms, "按下", &format!("送出 {k} 按下"), &src.tag()));
             let _ = event_tx.send(EngineEvent::KeyEmit {
                 ts_ms,
                 key: k.clone(),
                 action: "down",
+                source: src.clone(),
             });
         }
-        KeyAction::Release(k) => {
+        KeyAction::Release(k, src) => {
             let _ = sink.release(k);
             let ts_ms = now_ms();
-            elog.append(cfg.log_events, &event_log::format_line(ts_ms, "放開", &format!("送出 {k} 放開")));
+            elog.append(cfg.log_events, &event_log::format_line(ts_ms, "放開", &format!("送出 {k} 放開"), &src.tag()));
             let _ = event_tx.send(EngineEvent::KeyEmit {
                 ts_ms,
                 key: k.clone(),
                 action: "up",
+                source: src.clone(),
             });
         }
         KeyAction::MacroStart { name, source_id } => {
             if let Some(def) = cfg.macros.get(name) {
-                macros.start(*source_id, def.clone());
+                macros.start(*source_id, name, def.clone());
                 let ts_ms = now_ms();
-                elog.append(cfg.log_events, &event_log::format_line(ts_ms, "巨集", &format!("巨集「{name}」開始")));
+                let src = Source::Button(*source_id).tag();
+                elog.append(cfg.log_events, &event_log::format_line(ts_ms, "巨集", &format!("巨集「{name}」開始"), &src));
                 let _ = event_tx.send(EngineEvent::MacroStart {
                     ts_ms,
                     name: name.clone(),
+                    button: *source_id,
                 });
             } else {
                 tracing::error!(name = %name, "macro not found in config");

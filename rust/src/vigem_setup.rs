@@ -15,6 +15,7 @@ pub const INSTALLER_URL: &str =
     "https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_1.22.0_x64_x86_arm64.exe";
 pub const INSTALLER_SIZE: u64 = 6_278_576;
 pub const INSTALLER_SHA256: &str = "89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a";
+#[cfg_attr(not(windows), allow(dead_code))]
 const INSTALLER_NAME: &str = "ViGEmBus_1.22.0_x64_x86_arm64.exe";
 
 /// Check `path` against the pin (size first, then sha256). On a mismatch the

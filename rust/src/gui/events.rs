@@ -35,13 +35,14 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
                         app.emit("button-down", serde_json::json!({ "id": id })),
                     EngineEvent::ButtonUp { id } =>
                         app.emit("button-up", serde_json::json!({ "id": id })),
-                    EngineEvent::KeyEmit { ts_ms, key, action } =>
+                    EngineEvent::KeyEmit { ts_ms, key, action, source } =>
                         app.emit("activity", serde_json::json!({
-                            "ts_ms": ts_ms, "kind": "emit", "key": key, "action": action
+                            "ts_ms": ts_ms, "kind": "emit", "key": key, "action": action,
+                            "source": source_json(&source)
                         })),
-                    EngineEvent::MacroStart { ts_ms, name } =>
+                    EngineEvent::MacroStart { ts_ms, name, button } =>
                         app.emit("activity", serde_json::json!({
-                            "ts_ms": ts_ms, "kind": "macro-start", "name": name
+                            "ts_ms": ts_ms, "kind": "macro-start", "name": name, "button": button
                         })),
                     EngineEvent::MacroEnd { ts_ms, name, completed } =>
                         app.emit("activity", serde_json::json!({
@@ -60,4 +61,12 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
     });
+}
+
+/// The `activity` event's `source`: `{"button": id}` or `{"macro": name}`.
+pub fn source_json(src: &crate::mapper::Source) -> serde_json::Value {
+    match src {
+        crate::mapper::Source::Button(id) => serde_json::json!({ "button": id }),
+        crate::mapper::Source::Macro(name) => serde_json::json!({ "macro": name }),
+    }
 }
