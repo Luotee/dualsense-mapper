@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod test_helpers;
+
 use dualsense_mapper::engine::{Engine, EngineEvent};
 use dualsense_mapper::config::Config;
 use std::time::Duration;
@@ -135,3 +138,21 @@ fn disconnect_aimed_at_the_owner_reaches_it() {
     engine.shutdown();
 }
 
+
+#[test]
+fn key_emit_carries_button_source() {
+    use dualsense_mapper::mapper::Source;
+    let engine = Engine::spawn_with_fake_gamepad(test_helpers::load_example()).expect("spawn");
+    let h = engine.handle();
+    h.fake_event(dualsense_mapper::gamepad::GamepadEvent::Connected(dualsense_mapper::gamepad::ControllerKind::DualSense));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    h.drain_events();
+    h.fake_button_down(0);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let evs = h.drain_events();
+    assert!(
+        evs.iter().any(|e| matches!(e, EngineEvent::KeyEmit { source: Source::Button(0), action: "down", .. })),
+        "{evs:?}"
+    );
+    engine.shutdown();
+}

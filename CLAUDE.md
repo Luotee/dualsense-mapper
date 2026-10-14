@@ -158,11 +158,14 @@ The board's IPC surface the mock answers: reads `get_controller_status`,
 `set_trigger_mode`, `clear_pad`, `reset_pad`, `set_pad_tables`,
 `set_macro`, `rename_macro`, `delete_macro`, `set_settings`,
 `set_mapping_enabled`, `set_rumble_on_connect`, `save_stick_cal`,
-`reset_stick_cal`, `set_ui_prefs`; fire-and-forget
+`reset_stick_cal`, `set_ui_prefs`; runtime-only `set_pad_off` (header 關,
+returns the off pads, no `config-changed`); ViGEmBus `get_vigem_status`,
+`install_vigem`; fire-and-forget
 `set_capture_active`, `disconnect_gamepad`, `open_config_in_editor`,
 `open_config_folder`. Events the board listens for: `controller-status`
-(`connected` bool + `connected_pads`), `button-down/up`,
-`touchpad-click/hover`, `activity`, `config-changed`.
+(`connected` bool + `connected_pads` + `off_pads` + `warnings`),
+`button-down/up`, `touchpad-click/hover`, `activity` (with `source`:
+`{button}` / `{macro}`), `config-changed`.
 
 What a PASS requires, captured as evidence:
 - Every header / slot / palette / footer / editor / settings control
@@ -292,8 +295,11 @@ regresses real, observed bugs the codebase already fixed once:
    Single exception (v2.6.0): a virtual Xbox 360 pad through an
    externally installed ViGEmBus, used only for a controller Windows
    cannot use natively (the Switch 2 Pro, `ControllerKind::needs_virtual_pad`)
-   and only while its mapping is OFF. The app never ships or installs a
-   driver; hooking and injection stay forbidden.
+   and only while its mapping is OFF. The app never ships a driver. On the
+   user's click it may download the pinned official ViGEmBus installer,
+   verify size + sha256, and run it; the user goes through the installer's
+   own elevation prompt (`vigem_setup.rs`, v3.2.0). Hooking and injection
+   stay forbidden.
 8. **The exe is double-clicked, not invoked from a terminal.** Primary
    end-user flow on Windows is Explorer → double-click → GUI window
    opens. That means:
@@ -357,7 +363,8 @@ is the README FAQ「會不會被當成外掛？」):
 - Synthesized keys honor `min_press_ms` (randomized minimum down/up gap).
 - Simultaneous events on the same gamepad tick are spread by `tick_jitter_ms`.
 - No process hooking, DLL injection, or driver (the ViGEmBus exception
-  in iron rule 7 aside). User-mode `SendInput` / `CGEvent` only.
+  in iron rule 7 aside: never bundled, only the verified official
+  installer on the user's click). User-mode `SendInput` / `CGEvent` only.
 - `log_events: true` writes every synthesized event with a timestamp
   so the user can self-audit.
 

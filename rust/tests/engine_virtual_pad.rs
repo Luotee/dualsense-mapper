@@ -18,6 +18,15 @@ use std::time::Duration;
 
 const STEP: Duration = Duration::from_millis(100);
 
+/// The example config with the Switch 2 Pro set to Xbox output
+/// (`mapping_enabled.ns2_pro = false`). Since v3.2.0 every pad defaults to
+/// 鍵鼠, so these tests say Xbox explicitly.
+fn ns2_xbox() -> Config {
+    let mut cfg = test_helpers::load_example();
+    cfg.mapping_enabled.insert("ns2_pro".into(), false);
+    cfg
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Op {
     /// `held` = keys the engine still held when the pad was plugged.
@@ -140,7 +149,7 @@ fn status_events(h: &Handle) -> Vec<Vec<String>> {
 #[test]
 fn ns2_mapping_off_plugs_and_feeds() {
     // NS2 Pro defaults to mapping OFF.
-    let r = Rig::new(test_helpers::load_example(), None);
+    let r = Rig::new(ns2_xbox(), None);
     r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
     assert_eq!(r.plugs(), 1, "NS2 Pro + mapping OFF plugs the pad: {:?}", r.ops());
 
@@ -167,7 +176,7 @@ fn failed_update_is_retried_next_tick() {
     // The bus can refuse a report (WinError 259: the XInput side has no
     // request pending yet). The latest state must still get through, even
     // when no further event arrives to trigger another update.
-    let r = Rig::new(test_helpers::load_example(), None);
+    let r = Rig::new(ns2_xbox(), None);
     r.shared.lock().unwrap().failing_updates = 3;
     r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
     r.event(GamepadEvent::ButtonDown(0));
@@ -180,7 +189,7 @@ fn failed_update_is_retried_next_tick() {
 
 #[test]
 fn ns2_mapping_on_unplugs_and_synths_keys() {
-    let r = Rig::new(test_helpers::load_example(), None);
+    let r = Rig::new(ns2_xbox(), None);
     r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
     assert_eq!(r.plugs(), 1);
 
@@ -230,7 +239,7 @@ fn toggle_on_off_balanced() {
 
 #[test]
 fn disconnect_unplugs() {
-    let r = Rig::new(test_helpers::load_example(), None);
+    let r = Rig::new(ns2_xbox(), None);
     r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
     r.event(GamepadEvent::ButtonDown(1));
     assert_eq!(r.plugs(), 1);
@@ -258,7 +267,7 @@ fn disconnect_unplugs() {
 
 #[test]
 fn shutdown_and_pause_unplug() {
-    let r = Rig::new(test_helpers::load_example(), None);
+    let r = Rig::new(ns2_xbox(), None);
     r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
     assert_eq!(r.plugs(), 1);
 
@@ -280,7 +289,7 @@ fn shutdown_and_pause_unplug() {
 
 #[test]
 fn bus_not_found_sets_warning_no_retry_storm() {
-    let r = Rig::new(test_helpers::load_example(), Some(PadError::BusNotFound));
+    let r = Rig::new(ns2_xbox(), Some(PadError::BusNotFound));
     r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
     for i in 0..5 {
         r.event(GamepadEvent::ButtonDown(i));
@@ -338,7 +347,7 @@ fn dualsense_mapping_off_never_plugs() {
 
 #[test]
 fn warnings_from_ble_channel_reach_status() {
-    let r = Rig::new(test_helpers::load_example(), None);
+    let r = Rig::new(ns2_xbox(), None);
     // Arrives before any controller: kept for the process lifetime.
     r.h.fake_warning("ble_rate_limited_win10");
     std::thread::sleep(STEP);
@@ -365,5 +374,30 @@ fn warnings_from_ble_channel_reach_status() {
     r.event(GamepadEvent::Disconnected);
     r.event(GamepadEvent::Connected(ControllerKind::DualSense));
     assert_eq!(r.warnings(), want);
+    r.engine.shutdown();
+}
+
+#[test]
+fn retry_virtual_pad_after_install_plugs_again() {
+    let r = Rig::new(ns2_xbox(), Some(PadError::BusNotFound));
+    r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
+    assert_eq!(r.plugs(), 1);
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 1, "no retry storm");
+    r.h.retry_virtual_pad();
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 2, "one more attempt after an install");
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 2);
+    r.engine.shutdown();
+}
+
+#[test]
+fn retry_virtual_pad_respects_keys_mode() {
+    let r = Rig::new(test_helpers::load_example(), Some(PadError::BusNotFound));
+    r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
+    r.h.retry_virtual_pad();
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 0, "鍵鼠 mode never plugs");
     r.engine.shutdown();
 }

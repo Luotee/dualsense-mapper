@@ -63,8 +63,11 @@ impl ControllerKind {
         }
     }
 
+    /// Every pad defaults to keyboard / mouse output (v3.2.0; until then the
+    /// Switch 2 Pro defaulted to the virtual Xbox pad). A config that says
+    /// `false` keeps it.
     pub fn default_mapping_enabled(self) -> bool {
-        !matches!(self, ControllerKind::Ns2Pro)
+        true
     }
 
     pub fn needs_virtual_pad(self) -> bool {
@@ -85,10 +88,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_spec() {
-        assert!(ControllerKind::DualSense.default_mapping_enabled());
-        assert!(ControllerKind::NsPro.default_mapping_enabled());
-        assert!(!ControllerKind::Ns2Pro.default_mapping_enabled());
+    fn every_kind_defaults_to_mapping_on() {
+        for k in ControllerKind::ALL {
+            assert!(k.default_mapping_enabled(), "{k:?}");
+        }
     }
 
     #[test]

@@ -3,6 +3,48 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-10-13
+
+### Added
+
+- **關｜鍵鼠｜手把 in the header**, per controller. It replaces the
+  「鍵鼠對應」 switch. 鍵鼠 = buttons send keyboard / mouse; 手把 = the
+  program sends nothing and the game uses the controller itself (on the
+  Switch 2 Pro the third segment reads 「Xbox」: the game sees a virtual Xbox
+  pad); 關 = this controller sends nothing for now. 鍵鼠 / 手把 are saved
+  (`mapping_enabled`, schema unchanged); 關 is for this session only and a
+  restart clears it. While 關 or 手把, a banner says so and the board is
+  dimmed but stays editable. Switching to 關 releases every held key, stops
+  running macros and unplugs the virtual pad, like pause does.
+- **ViGEmBus prompt.** Picking Xbox on a PC without ViGEmBus opens a short
+  explanation with 稍後 / 改回鍵鼠 / 安裝 ViGEmBus. 安裝 downloads the
+  official ViGEmBus 1.22.0 installer from its GitHub release, checks its size
+  and sha256, and runs it (Windows asks for administrator rights); a file
+  that does not match is deleted and nothing runs. 稍後 leaves a 「!」 beside
+  the capsule that reopens it.
+- **最近的事件 says what sent each key**: the button (its glyph, as on the
+  board for the selected controller) or the macro name, e.g.
+  「△ → 送出 J 按下」. The event log file gets the same as a fourth column
+  (`src=btn:3`, `src=macro:連發`).
+- New IPC: `set_pad_off`, `get_vigem_status`, `install_vigem`;
+  `controller-status` carries `off_pads`.
+
+### Changed
+
+- **Every controller now defaults to 鍵鼠**, the Switch 2 Pro included (it
+  used to default to the virtual Xbox pad, which looked like "connected but
+  the game does nothing" on a PC without ViGEmBus). The bundled first-run
+  config says `"ns2_pro": true`.
+- Iron rule 7 (CLAUDE.md): the app still never ships a driver; on the
+  user's click it may download, verify and run the pinned official ViGEmBus
+  installer.
+
+### Migration
+
+- Existing configs are unchanged: a first-run file from an older version
+  holds `"ns2_pro": false`, so a Switch 2 Pro keeps its Xbox output. Pick
+  鍵鼠 in the header to get keys instead.
+
 ## [3.1.2] - 2026-10-13
 
 ### Fixed

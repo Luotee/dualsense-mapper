@@ -13,15 +13,16 @@ use std::path::PathBuf;
 pub const LOG_FILE: &str = "padtokbm-events.log";
 pub const ROTATE_BYTES: u64 = 1 << 20;
 
-/// `"2026-10-13 16:41:59.352\t按下\t送出 Alt 按下\n"` — local time.
-pub fn format_line(ts_ms: u64, kind: &str, text: &str) -> String {
+/// `"2026-10-13 16:41:59.352\t按下\t送出 Alt 按下\tsrc=btn:0\n"` — local
+/// time; `src` is what sent it (`btn:<id>` / `macro:<name>`, v3.2.0).
+pub fn format_line(ts_ms: u64, kind: &str, text: &str, src: &str) -> String {
     use chrono::TimeZone;
     let ts = chrono::Local
         .timestamp_millis_opt(ts_ms as i64)
         .single()
         .map(|t| t.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
         .unwrap_or_else(|| format!("{ts_ms}"));
-    format!("{ts}\t{kind}\t{text}\n")
+    format!("{ts}\t{kind}\t{text}\tsrc={src}\n")
 }
 
 pub struct EventLog {

@@ -1,5 +1,5 @@
 use crate::config::{MacroDef, StepAction};
-use crate::mapper::KeyAction;
+use crate::mapper::{KeyAction, Source};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -18,13 +18,16 @@ impl MacroEngine {
         Self { active: HashMap::new(), tx }
     }
 
-    pub fn start(&mut self, source_id: u32, def: MacroDef) {
+    /// Run macro `name` (its keys carry `Source::Macro(name)`) for button
+    /// `source_id`.
+    pub fn start(&mut self, source_id: u32, name: &str, def: MacroDef) {
         // If already running for this source, stop first.
         self.stop(source_id);
         let cancel = Arc::new(AtomicBool::new(false));
         self.active.insert(source_id, cancel.clone());
         let tx = self.tx.clone();
-        thread::spawn(move || run_macro(def, cancel, tx));
+        let src = Source::Macro(name.to_string());
+        thread::spawn(move || run_macro(def, src, cancel, tx));
     }
 
     pub fn stop(&mut self, source_id: u32) {
@@ -40,7 +43,7 @@ impl MacroEngine {
     }
 }
 
-fn run_macro(def: MacroDef, cancel: Arc<AtomicBool>, tx: Sender<KeyAction>) {
+fn run_macro(def: MacroDef, src: Source, cancel: Arc<AtomicBool>, tx: Sender<KeyAction>) {
     // Keys this macro has Pressed but not yet Released. If we exit (cancelled
     // or natural end) with anything still held, emit Release for each so the
     // KeyboardSink refcount returns to zero and OS state is balanced.
@@ -52,7 +55,7 @@ fn run_macro(def: MacroDef, cancel: Arc<AtomicBool>, tx: Sender<KeyAction>) {
     let drain = |held: &mut std::collections::HashSet<String>, tx: &Sender<KeyAction>| {
         for k in held.drain() {
             tracing::info!(key = %k, "macro draining unmatched Press on exit");
-            let _ = tx.send(KeyAction::Release(k));
+            let _ = tx.send(KeyAction::Release(k, src.clone()));
         }
     };
 
@@ -71,11 +74,11 @@ fn run_macro(def: MacroDef, cancel: Arc<AtomicBool>, tx: Sender<KeyAction>) {
             let action = match step.action {
                 StepAction::Down => {
                     held.insert(step.key.clone());
-                    KeyAction::Press(step.key.clone())
+                    KeyAction::Press(step.key.clone(), src.clone())
                 }
                 StepAction::Up => {
                     held.remove(&step.key);
-                    KeyAction::Release(step.key.clone())
+                    KeyAction::Release(step.key.clone(), src.clone())
                 }
             };
             if tx.send(action).is_err() {
@@ -125,14 +128,27 @@ mod tests {
     }
 
     #[test]
+    fn macro_keys_carry_macro_source() {
+        let (tx, rx) = mpsc::channel::<KeyAction>();
+        let mut eng = MacroEngine::new(tx);
+        eng.start(7, "連發", one_step_loop("j", [5, 10]));
+        let first = rx.recv_timeout(Duration::from_millis(500)).expect("first action");
+        assert_eq!(first, KeyAction::Press("j".into(), crate::mapper::Source::Macro("連發".into())));
+        eng.stop(7);
+        // The drain on stop releases with the same source.
+        let tail: Vec<KeyAction> = std::iter::from_fn(|| rx.recv_timeout(Duration::from_millis(200)).ok()).collect();
+        assert!(tail.iter().any(|a| *a == KeyAction::Release("j".into(), crate::mapper::Source::Macro("連發".into()))), "{tail:?}");
+    }
+
+    #[test]
     fn start_then_stop_terminates_quickly() {
         let (tx, rx) = mpsc::channel::<KeyAction>();
         let mut eng = MacroEngine::new(tx);
-        eng.start(23, one_step_loop("Left", [5, 10]));
+        eng.start(23, "m", one_step_loop("Left", [5, 10]));
 
         // wait for at least one action
         let first = rx.recv_timeout(Duration::from_millis(500)).expect("first action");
-        assert!(matches!(first, KeyAction::Press(ref k) if k == "Left"));
+        assert!(matches!(first, KeyAction::Press(ref k, _) if k == "Left"));
 
         let stop_at = Instant::now();
         eng.stop(23);
@@ -160,7 +176,7 @@ mod tests {
                 MacroStep { key: "Right".into(), action: StepAction::Down, delay_ms: [1, 5] },
             ],
         };
-        eng.start(24, def);
+        eng.start(24, "m", def);
 
         let mut got = Vec::new();
         while let Ok(a) = rx.recv_timeout(Duration::from_millis(200)) {
@@ -169,13 +185,13 @@ mod tests {
         // 2 Presses + 2 drained Releases.
         assert_eq!(got.len(), 4, "got {got:?}");
         // Step order: Press Left, Press Right come out in order.
-        assert!(matches!(got[0], KeyAction::Press(ref k) if k == "Left"));
-        assert!(matches!(got[1], KeyAction::Press(ref k) if k == "Right"));
+        assert!(matches!(got[0], KeyAction::Press(ref k, _) if k == "Left"));
+        assert!(matches!(got[1], KeyAction::Press(ref k, _) if k == "Right"));
         // Drain order is HashSet iteration order — not stable — so assert membership.
         let tail: Vec<&KeyAction> = got[2..].iter().collect();
-        assert!(tail.iter().any(|a| matches!(a, KeyAction::Release(k) if k == "Left")),
+        assert!(tail.iter().any(|a| matches!(a, KeyAction::Release(k, _) if k == "Left")),
                 "drain missing Release Left: {got:?}");
-        assert!(tail.iter().any(|a| matches!(a, KeyAction::Release(k) if k == "Right")),
+        assert!(tail.iter().any(|a| matches!(a, KeyAction::Release(k, _) if k == "Right")),
                 "drain missing Release Right: {got:?}");
     }
 
@@ -196,11 +212,11 @@ mod tests {
                 MacroStep { key: "Right".into(), action: StepAction::Up,   delay_ms: [200, 250] },
             ],
         };
-        eng.start(23, def);
+        eng.start(23, "m", def);
 
         // First emitted action is Press Left.
         let first = rx.recv_timeout(Duration::from_millis(500)).expect("first action");
-        assert!(matches!(first, KeyAction::Press(ref k) if k == "Left"));
+        assert!(matches!(first, KeyAction::Press(ref k, _) if k == "Left"));
 
         // Stop mid-delay, before the macro would naturally emit Release Left.
         std::thread::sleep(Duration::from_millis(50));
@@ -213,12 +229,12 @@ mod tests {
         }
         // The drain must contain at least one Release Left.
         assert!(
-            after.iter().any(|a| matches!(a, KeyAction::Release(k) if k == "Left")),
+            after.iter().any(|a| matches!(a, KeyAction::Release(k, _) if k == "Left")),
             "expected drained Release Left after cancel, got {after:?}"
         );
         // And must NOT contain any Press Left (we cancelled before next iteration).
         assert!(
-            !after.iter().any(|a| matches!(a, KeyAction::Press(k) if k == "Left")),
+            !after.iter().any(|a| matches!(a, KeyAction::Press(k, _) if k == "Left")),
             "expected no further Press Left after cancel, got {after:?}"
         );
     }
@@ -233,7 +249,7 @@ mod tests {
         let def = MacroDef { repeat: true, steps: vec![] };
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            run_macro(def, cancel, tx);
+            run_macro(def, Source::Macro("m".into()), cancel, tx);
             let _ = done_tx.send(());
         });
         assert!(done_rx.recv_timeout(Duration::from_millis(500)).is_ok(), "run_macro spun on an empty looping macro");

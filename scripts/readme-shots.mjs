@@ -79,7 +79,7 @@ await new Promise(r => server.listen(0, '127.0.0.1', r));
 function tauriMock({ config, version }) {
   const listeners = {};
   let nextId = 1;
-  const status = { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense', 'ns2_pro'] };
+  const status = { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense', 'ns2_pro'], off_pads: [] };
   window.__emit = (name, payload) => {
     for (const l of (listeners[name] || []).slice()) l.cb({ event: name, id: l.id, payload });
   };
@@ -91,6 +91,9 @@ function tauriMock({ config, version }) {
       case 'get_ui_prefs': return { last_pad: 'dualsense' };
       case 'get_app_version': return version;
       case 'get_config_path': return 'D:\\Games\\PadToKBM\\padtokbm.json';
+      case 'set_pad_off': return [];
+      case 'get_vigem_status': return 'installed';
+      case 'install_vigem': return 'installed';
       default: return null;
     }
   }
@@ -127,7 +130,7 @@ try {
 
   // 1. The board, DualSense shown, Cross held: slot, line and tile light up.
   await emit('button-down', { id: 0 });
-  await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'LAlt', action: 'down' });
+  await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'LAlt', action: 'down', source: { button: 0 } });
   await shot('board.png');
   await emit('button-up', { id: 0 });
   await emit('activity', { ts_ms: Date.now(), kind: 'emit', key: 'LAlt', action: 'up' });
@@ -150,8 +153,10 @@ try {
   // 4. Settings → 一般, with recent events.
   await page.click('#board [data-pad="dualsense"]');
   await page.click('#board [data-act="setopen"]');
-  for (const [kind, extra] of [['emit', { key: 'LAlt', action: 'down' }], ['emit', { key: 'LAlt', action: 'up' }],
-    ['macro-start', { name: '連發' }], ['emit', { key: 'j', action: 'down' }], ['emit', { key: 'j', action: 'up' }], ['macro-end', { name: '連發' }]]) {
+  // Each row names what sent it (v3.2.0): Cross → LAlt, Triangle → its macro.
+  for (const [kind, extra] of [['emit', { key: 'LAlt', action: 'down', source: { button: 0 } }], ['emit', { key: 'LAlt', action: 'up', source: { button: 0 } }],
+    ['macro-start', { name: '跳躍攻擊', button: 3 }], ['emit', { key: 'LAlt', action: 'down', source: { macro: '跳躍攻擊' } }],
+    ['emit', { key: 'LAlt', action: 'up', source: { macro: '跳躍攻擊' } }], ['emit', { key: 'Space', action: 'down', source: { button: 9 } }]]) {
     await emit('activity', { ts_ms: Date.now(), kind, ...extra });
     await page.waitForTimeout(40);
   }

@@ -70,7 +70,26 @@ async function simple(cmd, args) {
 
 export function disconnectPad(pad) { return simple('disconnect_gamepad', { pad }); }
 export function setRumble(enabled) { return simple('set_rumble_on_connect', { enabled }); }
-export function setMapping(enabled) { return simple('set_mapping_enabled', { kind: state.pad, enabled }); }
+
+// The header capsule: 關 is runtime only (set_pad_off); 鍵鼠 / 手把 clear it
+// and save mapping_enabled. Rust decides what each mode does (iron rule 9).
+async function setOff(pad, off) {
+  const list = await invoke('set_pad_off', { kind: pad, off });
+  if (Array.isArray(list)) state.offPads = new Set(list);
+}
+const modeHooks = [];
+export function onModeChange(f) { modeHooks.push(f); }
+export async function setMode(mode) {
+  const pad = state.pad;
+  try {
+    if (mode === 'off') { await setOff(pad, true); modeHooks.forEach(f => f(pad, mode)); rerender(); return; }
+    if (state.offPads.has(pad)) await setOff(pad, false);
+    const enabled = mode === 'kbm';
+    if (state.config.mapping_enabled?.[pad] !== enabled) await invoke('set_mapping_enabled', { kind: pad, enabled });
+    modeHooks.forEach(f => f(pad, mode));
+    rerender();
+  } catch (e) { state.note = errText(e); rerender(); }
+}
 
 // The Settings struct of `set_settings`, from the live config.
 export function settingsFrom(c) {

@@ -906,7 +906,8 @@ mod tests {
         use crate::gamepad::ControllerKind;
         let cfg = Config::load_from_str(&minimal_json_with("")).unwrap();
         assert!(cfg.mapping_enabled_for(ControllerKind::DualSense));
-        assert!(!cfg.mapping_enabled_for(ControllerKind::Ns2Pro));
+        // v3.2.0: every pad defaults to 鍵鼠, the Switch 2 Pro included.
+        assert!(cfg.mapping_enabled_for(ControllerKind::Ns2Pro));
     }
 
     #[test]
