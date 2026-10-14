@@ -121,6 +121,7 @@ pub fn run(cfg: Config, opts: RunOptions) -> Result<()> {
             crate::gui::commands::set_settings,
             crate::gui::commands::reset_settings,
             crate::gui::commands::set_mapping_enabled,
+            crate::gui::commands::set_pad_off,
             crate::gui::commands::pause_mapper,
             crate::gui::commands::open_config_in_editor,
             crate::gui::commands::open_config_folder,

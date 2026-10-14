@@ -11,7 +11,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
         loop {
             for ev in engine.drain_events() {
                 let _ = match ev {
-                    EngineEvent::ControllerConnected { name, transport, kind, warnings, connected } => {
+                    EngineEvent::ControllerConnected { name, transport, kind, warnings, connected, off_pads } => {
                         // Spec §10: tray icon swaps to "connected" on plug-in.
                         // Also re-sent when `warnings` change (idempotent here).
                         if let Some(tray) = app.try_state::<TrayIcon<R>>() {
@@ -19,7 +19,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
                         }
                         app.emit("controller-status", serde_json::json!({
                             "connected": true, "name": name, "transport": transport, "kind": kind,
-                            "warnings": warnings, "connected_pads": connected
+                            "warnings": warnings, "connected_pads": connected, "off_pads": off_pads
                         }))
                     }
                     EngineEvent::ControllerDisconnected => {
@@ -28,7 +28,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>, engine: Handle) {
                         }
                         app.emit("controller-status", serde_json::json!({
                             "connected": false, "name": "", "transport": "", "kind": null,
-                            "warnings": [], "connected_pads": []
+                            "warnings": [], "connected_pads": [], "off_pads": engine.off_pads()
                         }))
                     }
                     EngineEvent::ButtonDown { id } =>

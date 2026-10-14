@@ -40,6 +40,8 @@ pub enum EngineEvent {
         warnings: Vec<String>,
         /// Every connected pad: the owner (`kind`) first, then waiting ones.
         connected: Vec<ControllerKind>,
+        /// Pads switched off for this session (`Handle::set_pad_off`).
+        off_pads: Vec<ControllerKind>,
     },
     ControllerDisconnected,
     ButtonDown { id: u32 },
@@ -67,6 +69,8 @@ pub struct ControllerStatus {
     /// Every connected pad: the owner (`kind`) first, then the ones that
     /// wait for the session.
     pub connected: Vec<ControllerKind>,
+    /// Pads switched off for this session (runtime only, `set_pad_off`).
+    pub off_pads: Vec<ControllerKind>,
 }
 
 // ─── ConfigWriteGuard — bumps generation on drop ─────────────────────────────
@@ -102,6 +106,9 @@ struct HandleInner {
     /// seen value and rebuilds the Mapper when they differ.
     config_generation: AtomicU64,
     paused: AtomicBool,
+    /// Pads switched off for this session (header 關), in `ControllerKind::ALL`
+    /// order. Runtime only: never written to the config, cleared by restart.
+    off_pads: RwLock<Vec<ControllerKind>>,
     capture_active: AtomicBool,
     shutdown: AtomicBool,
     event_tx: Sender<EngineEvent>,
@@ -178,6 +185,25 @@ impl Handle {
     /// nothing is written even with `log_events` on.
     pub fn set_log_dir(&self, dir: PathBuf) {
         *self.inner.pending_log_dir.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
+    }
+
+    /// Switch pad `kind` off (`true`) or back on for this session. While the
+    /// session owner is off the engine synthesizes nothing for it and keeps
+    /// its virtual pad unplugged; the on→off edge releases every held key and
+    /// stops its macros. Keyed by kind: it survives reconnects and may be set
+    /// while the pad is away. Not a config change (no `config-changed`).
+    pub fn set_pad_off(&self, kind: ControllerKind, off: bool) {
+        let mut v = self.inner.off_pads.write().unwrap_or_else(|p| p.into_inner());
+        let mut set: Vec<ControllerKind> = v.iter().copied().filter(|k| *k != kind).collect();
+        if off {
+            set.push(kind);
+        }
+        *v = ControllerKind::ALL.into_iter().filter(|k| set.contains(k)).collect();
+    }
+
+    /// Pads switched off for this session, in `ControllerKind::ALL` order.
+    pub fn off_pads(&self) -> Vec<ControllerKind> {
+        self.inner.off_pads.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn set_paused(&self, v: bool) {
@@ -403,6 +429,7 @@ impl Engine {
             config: RwLock::new(cfg),
             config_generation: AtomicU64::new(0),
             paused: AtomicBool::new(false),
+            off_pads: RwLock::new(Vec::new()),
             capture_active: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             event_tx,
@@ -473,6 +500,10 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
     // Disconnected) means mapping ON.
     let mut current_kind: Option<ControllerKind> = None;
     let mut mapping_on = true;
+    // The owner is switched off (header 關): synthesize nothing, no virtual
+    // pad. Polling goes on, so connects / disconnects are still seen.
+    let mut pad_off = false;
+    let mut last_off_pads: Vec<ControllerKind> = Vec::new();
 
     // Virtual Xbox pad (NS2 Pro, mapping OFF) and the status warnings.
     let mut pad = PadLink::new(pad);
@@ -533,10 +564,27 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         }
         mapping_on = now_on;
 
+        // ── Per-pad 關: on→off edge releases everything ──────────────────────
+        let off_now = h.off_pads.read().unwrap_or_else(|p| p.into_inner()).clone();
+        if off_now != last_off_pads {
+            last_off_pads = off_now.clone();
+            republish_status(&h, |s| s.off_pads = off_now.clone());
+        }
+        let now_off = is_off(&last_off_pads, current_kind);
+        if now_off && !pad_off {
+            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx, &mut elog);
+            mapper.reset_input_state();
+        }
+        if !now_off && pad_off {
+            // Back on: one more plug attempt if Xbox output had failed.
+            pad.rearm();
+        }
+        pad_off = now_off;
+
         // ── Virtual pad: plugged only for an NS2 Pro with mapping OFF ────────
         // After the OFF edge's release above (keys up, then the pad appears);
         // before polling on the ON edge (pad gone, then keys resume).
-        warnings_changed |= pad.sync(wants_pad(paused, mapping_on, current_kind));
+        warnings_changed |= pad.sync(wants_pad(paused || pad_off, mapping_on, current_kind));
         if warnings_changed {
             publish_warnings(&h, status_warnings(&worker_warnings, &pad));
         }
@@ -566,9 +614,15 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                             mapper.reset_input_state();
                         }
                         mapping_on = now_on;
+                        let now_off = is_off(&last_off_pads, current_kind);
+                        if now_off && !pad_off {
+                            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx, &mut elog);
+                            mapper.reset_input_state();
+                        }
+                        pad_off = now_off;
                         // A fresh session: neutral pad state, one plug attempt.
                         pad.reset_session();
-                        pad.sync(wants_pad(paused, mapping_on, current_kind));
+                        pad.sync(wants_pad(paused || pad_off, mapping_on, current_kind));
                         last_connected = source.connected_kinds();
                         let status = ControllerStatus {
                             name: kind.display_name().to_string(),
@@ -576,6 +630,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                             kind,
                             warnings: status_warnings(&worker_warnings, &pad),
                             connected: last_connected.clone(),
+                            off_pads: last_off_pads.clone(),
                         };
                         *h.current_status.write().unwrap() = Some(status.clone());
                         let _ = h.event_tx.send(connected_event(&status));
@@ -590,6 +645,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                     }
                     crate::gamepad::GamepadEvent::Disconnected => {
                         current_kind = None;
+                        pad_off = false;
                         last_connected.clear();
                         // The pad is gone: so is its virtual twin.
                         pad.sync(false);
@@ -632,8 +688,9 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                     };
                 }
                 for action in &actions {
-                    // Mapping OFF: keep the touchpad diagnostics, synthesize nothing.
-                    if !mapping_on && !is_diagnostic(action) {
+                    // Mapping OFF or pad off: keep the touchpad diagnostics,
+                    // synthesize nothing.
+                    if (!mapping_on || pad_off) && !is_diagnostic(action) {
                         continue;
                     }
                     execute_action(action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx, &mut elog);
@@ -644,7 +701,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
             while let Ok(action) = macro_rx.try_recv() {
                 // Mapping OFF: a macro cancelled on the ON→OFF edge may still
                 // race a late Press/Release in; drop it (sink was already reset).
-                if !mapping_on && !is_diagnostic(&action) {
+                if (!mapping_on || pad_off) && !is_diagnostic(&action) {
                     continue;
                 }
                 execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx, &mut elog);
@@ -684,6 +741,11 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
 /// No known controller → ON.
 fn mapping_enabled(h: &HandleInner, kind: Option<ControllerKind>) -> bool {
     kind.map_or(true, |k| h.config.read().unwrap().mapping_enabled_for(k))
+}
+
+/// Whether the session owner `kind` is switched off.
+fn is_off(off: &[ControllerKind], kind: Option<ControllerKind>) -> bool {
+    kind.map_or(false, |k| off.contains(&k))
 }
 
 /// The virtual Xbox pad is plugged only for a connected NS2 Pro with mapping
@@ -726,6 +788,7 @@ fn connected_event(status: &ControllerStatus) -> EngineEvent {
         kind: status.kind,
         warnings: status.warnings.clone(),
         connected: status.connected.clone(),
+        off_pads: status.off_pads.clone(),
     }
 }
 
