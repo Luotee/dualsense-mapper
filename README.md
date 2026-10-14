@@ -1,5 +1,7 @@
 # PadToKBM 手把轉鍵鼠
 
+**繁體中文** | [English](README.en.md)
+
 **把手把變成鍵盤和滑鼠：只吃鍵鼠的遊戲，也能拿手把玩。**
 
 <p align="center">
