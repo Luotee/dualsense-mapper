@@ -158,11 +158,14 @@ The board's IPC surface the mock answers: reads `get_controller_status`,
 `set_trigger_mode`, `clear_pad`, `reset_pad`, `set_pad_tables`,
 `set_macro`, `rename_macro`, `delete_macro`, `set_settings`,
 `set_mapping_enabled`, `set_rumble_on_connect`, `save_stick_cal`,
-`reset_stick_cal`, `set_ui_prefs`; fire-and-forget
+`reset_stick_cal`, `set_ui_prefs`; runtime-only `set_pad_off` (header 關,
+returns the off pads, no `config-changed`); ViGEmBus `get_vigem_status`,
+`install_vigem`; fire-and-forget
 `set_capture_active`, `disconnect_gamepad`, `open_config_in_editor`,
 `open_config_folder`. Events the board listens for: `controller-status`
-(`connected` bool + `connected_pads`), `button-down/up`,
-`touchpad-click/hover`, `activity`, `config-changed`.
+(`connected` bool + `connected_pads` + `off_pads` + `warnings`),
+`button-down/up`, `touchpad-click/hover`, `activity` (with `source`:
+`{button}` / `{macro}`), `config-changed`.
 
 What a PASS requires, captured as evidence:
 - Every header / slot / palette / footer / editor / settings control

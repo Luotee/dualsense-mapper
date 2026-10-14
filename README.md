@@ -8,7 +8,7 @@
 </p>
 <p align="center"><sub>按鍵設定畫面：把鍵盤、滑鼠或巨集方塊拖到按鈕的格子上就綁好了。按下的按鈕和它送出的鍵會亮起來。</sub></p>
 
-PadToKBM（舊名 DualSense Mapper）是一個 Windows 小程式：一個約 11 MB 的 `PadToKBM.exe`，不用安裝、沒有驅動。
+PadToKBM（舊名 DualSense Mapper）是一個 Windows 小程式：一個約 11 MB 的 `PadToKBM.exe`，不用安裝、不附驅動。
 支援 **DualSense（PS5）、Switch Pro、Switch 2 Pro** 三種手把，每支各自一套按鍵設定。
 最初是為了讓我太太在筆電上用手把玩 MapleStory Worlds Artale 而寫的。
 
@@ -26,6 +26,7 @@ PadToKBM（舊名 DualSense Mapper）是一個 Windows 小程式：一個約 11 
 | 一鍵連發、固定招式要按很多下 | **巨集**：錄一串按下／放開，可以循環；每一步的延遲都是「最短～最長」的範圍 |
 | 怕被當成腳本或外掛 | 所有按鍵時間都帶隨機，沒有固定節拍；只用 Windows 一般的按鍵輸入，不注入、不改遊戲 |
 | 鍵卡住放不開 | 手把斷線、關掉程式、程式當掉時，按著的鍵都會放開 |
+| 有時想直接用手把玩 | 右上角每支手把各自選「關｜鍵鼠｜手把」：手把就是程式不送東西、遊戲直接用手把（Switch 2 Pro 變成 Xbox 手把） |
 
 ---
 
@@ -63,7 +64,7 @@ PadToKBM（舊名 DualSense Mapper）是一個 Windows 小程式：一個約 11 
   </tr>
   <tr>
     <td><sub><b>巨集。</b>點鍵盤的鍵加步驟，拖曳排順序，拖出去刪除。</sub></td>
-    <td><sub><b>設定</b>（齒輪）：設定檔與最近的事件、搖桿校正、觸控板、按鍵時間，按「儲存」才套用。</sub></td>
+    <td><sub><b>設定</b>（齒輪）：設定檔與最近的事件（每筆標出是哪顆按鈕或哪個巨集送的）、搖桿校正、觸控板、按鍵時間，按「儲存」才套用。</sub></td>
   </tr>
 </table>
 
@@ -75,14 +76,20 @@ PadToKBM（舊名 DualSense Mapper）是一個 Windows 小程式：一個約 11 
 
 ### 會不會被當成外掛？
 
-它只做「手把按鍵 → 鍵盤按鍵」，跟你自己按鍵盤一樣，用的是 Windows 一般的按鍵輸入（`SendInput`），不注入程式、不改遊戲檔、不裝驅動。
+它只做「手把按鍵 → 鍵盤按鍵」，跟你自己按鍵盤一樣，用的是 Windows 一般的按鍵輸入（`SendInput`），不注入程式、不改遊戲檔，本身也不帶驅動。
 為了不像腳本，按住時間（`min_press_ms`）、同時按下的錯開（`tick_jitter_ms`）、巨集每一步的延遲都是隨機範圍，不能設成固定值。
 要自己檢查的話，把設定的「記錄每個按鍵事件」打開，每個送出的鍵都會連同時間寫進設定檔旁邊的 `padtokbm-events.log`（超過 1 MB 會換成 `.log.1` 再重寫）。
 
 ### Switch 2 Pro 連上了，遊戲卻沒反應？
 
-Switch 2 Pro 預設是**不轉鍵鼠**：PadToKBM 把它變成一支虛擬 Xbox 手把給遊戲用，這需要先安裝
-[ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)。想讓它送鍵盤按鍵，把畫面上方的「鍵鼠對應」打開。
+先看畫面右上的「關｜鍵鼠｜手把」（Switch 2 Pro 的第三格寫「Xbox」）：
+
+- **鍵鼠**（預設）：按鍵送出鍵盤、滑鼠，不需要其他東西。
+- **Xbox**：PadToKBM 把它變成一支虛擬 Xbox 手把給遊戲用，這需要
+  [ViGEmBus 1.22.0](https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0)。這台還沒裝的話，選 Xbox 時會跳出提示，
+  按「安裝 ViGEmBus」會下載官方安裝程式、核對檔案後執行（會要求系統管理員權限）。
+- **關**：這支手把這次先不送任何東西，重開程式就恢復。
+
 建議用 Windows 11（Windows 10 的藍牙會把它限制在約 17 Hz）。
 
 ### 設定檔在哪？可以直接改嗎？
@@ -97,6 +104,7 @@ Switch 2 Pro 預設是**不轉鍵鼠**：PadToKBM 把它變成一支虛擬 Xbox 
 ### 不想用的時候可以把手把關掉嗎？
 
 可以，點手把名稱旁的電源鍵。配對會保留，按 PS／HOME 鍵就能再連上。
+只想讓遊戲直接用手把（不轉鍵鼠）就選「手把」；暫時不想讓它送東西就選「關」。
 
 ### 支援 USB、DualSense Edge、Xbox 手把或 macOS 嗎？
 
