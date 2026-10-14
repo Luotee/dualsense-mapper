@@ -3,6 +3,15 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- The English README is back as `README.en.md`, up to date with v3.2.0;
+  `README.md` stays Chinese and is still the default. Both start with a
+  繁體中文 | English switch (v3.1.0 had replaced the two READMEs with one
+  Chinese file).
+
 ## [3.2.0] - 2026-10-13
 
 ### Added
