@@ -157,6 +157,8 @@ struct HandleInner {
     /// Folder for the `log_events` file, handed to the engine thread on its
     /// next tick (`Handle::set_log_dir`).
     pending_log_dir: Mutex<Option<PathBuf>>,
+    /// One more virtual-pad plug attempt requested (`retry_virtual_pad`).
+    retry_pad: AtomicBool,
 }
 
 // ─── Handle (GUI-side) ───────────────────────────────────────────────────────
@@ -204,6 +206,13 @@ impl Handle {
     /// Pads switched off for this session, in `ControllerKind::ALL` order.
     pub fn off_pads(&self) -> Vec<ControllerKind> {
         self.inner.off_pads.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Allow one more plug of the virtual Xbox pad (after ViGEmBus was
+    /// installed). Plugs only if the owner still wants it (NS2 Pro, Xbox
+    /// mode, not paused / off); clears `vigem_missing` until a plug fails again.
+    pub fn retry_virtual_pad(&self) {
+        self.inner.retry_pad.store(true, Ordering::SeqCst);
     }
 
     pub fn set_paused(&self, v: bool) {
@@ -447,6 +456,7 @@ impl Engine {
             stick_probe,
             virtual_pad: Arc::downgrade(&pad),
             pending_log_dir: Mutex::new(None),
+            retry_pad: AtomicBool::new(false),
         });
 
         let handle = Handle { inner: inner.clone() };
@@ -580,6 +590,14 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
             pad.rearm();
         }
         pad_off = now_off;
+
+        if h.retry_pad.swap(false, Ordering::SeqCst) {
+            pad.rearm();
+            if pad.bus_missing {
+                pad.bus_missing = false;
+                warnings_changed = true;
+            }
+        }
 
         // ── Virtual pad: plugged only for an NS2 Pro with mapping OFF ────────
         // After the OFF edge's release above (keys up, then the pad appears);

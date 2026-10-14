@@ -13,5 +13,6 @@ pub mod pad_bindings;
 pub mod platform;
 pub mod safety;
 pub mod app;
+pub mod vigem_setup;
 pub mod virtual_pad;
 pub mod xinput_sink;

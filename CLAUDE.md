@@ -292,8 +292,11 @@ regresses real, observed bugs the codebase already fixed once:
    Single exception (v2.6.0): a virtual Xbox 360 pad through an
    externally installed ViGEmBus, used only for a controller Windows
    cannot use natively (the Switch 2 Pro, `ControllerKind::needs_virtual_pad`)
-   and only while its mapping is OFF. The app never ships or installs a
-   driver; hooking and injection stay forbidden.
+   and only while its mapping is OFF. The app never ships a driver. On the
+   user's click it may download the pinned official ViGEmBus installer,
+   verify size + sha256, and run it; the user goes through the installer's
+   own elevation prompt (`vigem_setup.rs`, v3.2.0). Hooking and injection
+   stay forbidden.
 8. **The exe is double-clicked, not invoked from a terminal.** Primary
    end-user flow on Windows is Explorer → double-click → GUI window
    opens. That means:
@@ -357,7 +360,8 @@ is the README FAQ「會不會被當成外掛？」):
 - Synthesized keys honor `min_press_ms` (randomized minimum down/up gap).
 - Simultaneous events on the same gamepad tick are spread by `tick_jitter_ms`.
 - No process hooking, DLL injection, or driver (the ViGEmBus exception
-  in iron rule 7 aside). User-mode `SendInput` / `CGEvent` only.
+  in iron rule 7 aside: never bundled, only the verified official
+  installer on the user's click). User-mode `SendInput` / `CGEvent` only.
 - `log_events: true` writes every synthesized event with a timestamp
   so the user can self-audit.
 

@@ -376,3 +376,28 @@ fn warnings_from_ble_channel_reach_status() {
     assert_eq!(r.warnings(), want);
     r.engine.shutdown();
 }
+
+#[test]
+fn retry_virtual_pad_after_install_plugs_again() {
+    let r = Rig::new(ns2_xbox(), Some(PadError::BusNotFound));
+    r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
+    assert_eq!(r.plugs(), 1);
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 1, "no retry storm");
+    r.h.retry_virtual_pad();
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 2, "one more attempt after an install");
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 2);
+    r.engine.shutdown();
+}
+
+#[test]
+fn retry_virtual_pad_respects_keys_mode() {
+    let r = Rig::new(test_helpers::load_example(), Some(PadError::BusNotFound));
+    r.event(GamepadEvent::Connected(ControllerKind::Ns2Pro));
+    r.h.retry_virtual_pad();
+    std::thread::sleep(STEP);
+    assert_eq!(r.plugs(), 0, "鍵鼠 mode never plugs");
+    r.engine.shutdown();
+}

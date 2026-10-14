@@ -648,6 +648,35 @@ pub fn set_pad_off_impl(engine: &Handle, kind: &str, off: bool) -> anyhow::Resul
     Ok(engine.off_pads().into_iter().map(|k| k.slug().to_string()).collect())
 }
 
+// ─── ViGEmBus (Switch 2 Pro Xbox output) ─────────────────────────────────────
+
+/// Tauri command: `"installed" | "missing" | "unsupported"`.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub async fn get_vigem_status() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| crate::vigem_setup::status().to_string())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri command: download the pinned official ViGEmBus installer, verify
+/// it and run it (iron rule 7); returns the status after the installer
+/// exits. When installed, the engine gets one more virtual-pad plug.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
+pub async fn install_vigem(engine: State<'_, Handle>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(crate::vigem_setup::install)
+        .await
+        .map_err(|e| e.to_string())??;
+    let status = tauri::async_runtime::spawn_blocking(|| crate::vigem_setup::status())
+        .await
+        .map_err(|e| e.to_string())?;
+    if status == "installed" {
+        engine.retry_virtual_pad();
+    }
+    Ok(status.to_string())
+}
+
 // ─── Stick calibration ───────────────────────────────────────────────────────
 
 /// Tauri command: save one pad's stick calibration (validated by the reject
