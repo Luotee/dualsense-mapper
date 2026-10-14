@@ -19,7 +19,7 @@ export function triggerModes(config, pad) {
 
 export function mappingOn(config, pad) {
   const v = config?.mapping_enabled?.[pad];
-  return v === undefined ? pad !== 'ns2_pro' : v;
+  return v === undefined ? true : v;
 }
 
 export function disp(k) {

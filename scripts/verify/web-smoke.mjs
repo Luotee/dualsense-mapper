@@ -237,6 +237,11 @@ try {
   const ns2Slots = await page.locator('#board .slot').evaluateAll(els => els.map(e => e.dataset.slot));
   check('Switch 2 Pro shows 30/31/32 and no touchpad slots', ['30', '31', '32'].every(k => ns2Slots.includes(k)) && !ns2Slots.includes('25'));
   check('pad choice saved as last_pad', (await lastCall(page, 'set_ui_prefs'))?.args?.prefs?.last_pad === 'ns2_pro');
+  check('Switch 2 Pro maps to keys in the example config (v3.2.0 default)', !(await page.locator('#board').getAttribute('class')).split(' ').includes('off'));
+  await page.evaluate(() => { delete window.__mock.config.mapping_enabled.ns2_pro; });
+  await page.evaluate(() => window.__mockEmit('config-changed', { source: 'external' }));
+  await settle(page);
+  check('missing mapping_enabled.ns2_pro → keys (not off)', !(await page.locator('#board').getAttribute('class')).split(' ').includes('off'));
 
   await tile(page, 'Q').dragTo(slot(page, '0'));
   await settle(page);

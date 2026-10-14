@@ -23,7 +23,7 @@ function paint() {
 
 function mappingOff() {
   const v = state.config?.mapping_enabled?.[state.pad];
-  return (v === undefined ? state.pad !== 'ns2_pro' : v) === false;
+  return v === false;
 }
 
 onRender(paint);

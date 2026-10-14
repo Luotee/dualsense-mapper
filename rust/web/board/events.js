@@ -40,7 +40,7 @@ export function wire(board) {
     }
     const a = el.dataset.act, c = state.config;
     if (a === 'rumble') act.setRumble(c.rumble_on_connect === false);
-    else if (a === 'map') act.setMapping(!(c.mapping_enabled?.[state.pad] ?? state.pad !== 'ns2_pro'));
+    else if (a === 'map') act.setMapping(!(c.mapping_enabled?.[state.pad] ?? true));
     else if (a === 'tp') act.setTouchpadCursor(c.touchpad_cursor_enabled === false);
     else if (a === 'reset') act.resetPad();
     else if (a === 'clear') act.clearPad();
