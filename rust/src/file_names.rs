@@ -19,7 +19,8 @@ pub enum Adoption {
     /// No old file: nothing to do.
     NoLegacy,
     /// The new file already exists; neither file was touched.
-    AlreadyNew,
+    /// `legacy_present`: the old file is still there too (logged once).
+    AlreadyNew { legacy_present: bool },
     /// The old file now lives under the new name; `backup` is a copy of it.
     Adopted { from: PathBuf, to: PathBuf, backup: PathBuf },
     /// Copy or rename failed; the old file is unchanged.
@@ -30,7 +31,7 @@ pub fn adopt_legacy(dir: &Path, legacy: &str, new: &str) -> Adoption {
     let from = dir.join(legacy);
     let to = dir.join(new);
     if to.exists() {
-        return Adoption::AlreadyNew;
+        return Adoption::AlreadyNew { legacy_present: from.is_file() };
     }
     if !from.is_file() {
         return Adoption::NoLegacy;
@@ -55,8 +56,25 @@ pub fn default_config_path(dir: &Path) -> (PathBuf, Adoption) {
     (path, got)
 }
 
-/// One log line for an adoption outcome (nothing for the quiet cases).
-pub fn log_adoption(got: &Adoption) {
+/// Startup adoption for `dir` (the exe dir when no `--config` is given):
+/// the config and the ui-prefs file, each logged. Returns the config path
+/// to use (see [`default_config_path`]).
+pub fn adopt_all(dir: &Path) -> PathBuf {
+    let (path, got) = default_config_path(dir);
+    log_adoption(&got, LEGACY_CONFIG_FILE, CONFIG_FILE);
+    adopt_ui_prefs(dir);
+    path
+}
+
+/// Adopt only the ui-prefs file in `dir` (the `--config` case: the chosen
+/// config file is never renamed).
+pub fn adopt_ui_prefs(dir: &Path) {
+    log_adoption(&adopt_legacy(dir, LEGACY_UI_PREFS_FILE, UI_PREFS_FILE), LEGACY_UI_PREFS_FILE, UI_PREFS_FILE);
+}
+
+/// One log line for an adoption outcome of `legacy` → `new` (nothing for
+/// the quiet cases).
+pub fn log_adoption(got: &Adoption, legacy: &str, new: &str) {
     match got {
         Adoption::Adopted { from, to, backup } => tracing::info!(
             "renamed {} to {} (copy kept as {})",
@@ -67,6 +85,11 @@ pub fn log_adoption(got: &Adoption) {
         Adoption::Failed { legacy, error } => {
             tracing::warn!("could not rename {}: {error}; using it in place", legacy.display())
         }
-        Adoption::NoLegacy | Adoption::AlreadyNew => {}
+        Adoption::AlreadyNew { legacy_present: true } => {
+            // Only the new file is read; say so once, so a user editing the
+            // old one knows why nothing changes.
+            tracing::info!("using {new}; {legacy} left untouched");
+        }
+        Adoption::NoLegacy | Adoption::AlreadyNew { legacy_present: false } => {}
     }
 }

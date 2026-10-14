@@ -9,6 +9,7 @@
 //!   * `EngineEvent` — what the loop emits for the activity log.
 
 use crate::config::Config;
+use crate::event_log::{self, EventLog};
 use crate::gamepad::stick_cal::{StickCalTable, StickPositions, StickProbe};
 use crate::gamepad::{ControllerKind, CursorParams, GamepadSource, HubCmd, SourceCmd};
 use crate::keyboard::KeyboardSink;
@@ -20,6 +21,7 @@ use crate::virtual_pad::XState;
 use crate::xinput_sink::{self, PadError, SharedPad, VirtualPad};
 use anyhow::Result;
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::thread::{self, JoinHandle};
@@ -145,6 +147,9 @@ struct HandleInner {
     /// The virtual Xbox pad. `Weak`: the engine thread owns it, so it is
     /// dropped (and unplugged) when that thread ends, even by unwinding.
     virtual_pad: Weak<Mutex<Box<dyn VirtualPad>>>,
+    /// Folder for the `log_events` file, handed to the engine thread on its
+    /// next tick (`Handle::set_log_dir`).
+    pending_log_dir: Mutex<Option<PathBuf>>,
 }
 
 // ─── Handle (GUI-side) ───────────────────────────────────────────────────────
@@ -163,9 +168,16 @@ impl Handle {
     }
 
     /// The session owner's latest stick positions, raw and corrected
-    /// (`None`: no controller connected, or no stick report yet).
+    /// (`None`: no controller connected, or no stick report yet), with the
+    /// raw extents seen since the previous call.
     pub fn stick_positions(&self) -> Option<StickPositions> {
-        self.inner.stick_probe.snapshot()
+        self.inner.stick_probe.take()
+    }
+
+    /// Where the `log_events` file goes (the config's folder). Until set,
+    /// nothing is written even with `log_events` on.
+    pub fn set_log_dir(&self, dir: PathBuf) {
+        *self.inner.pending_log_dir.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
     }
 
     pub fn set_paused(&self, v: bool) {
@@ -407,6 +419,7 @@ impl Engine {
             stick_cal,
             stick_probe,
             virtual_pad: Arc::downgrade(&pad),
+            pending_log_dir: Mutex::new(None),
         });
 
         let handle = Handle { inner: inner.clone() };
@@ -466,8 +479,14 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
     let mut worker_warnings: Vec<String> = Vec::new();
     // The connected pads last published in the status.
     let mut last_connected: Vec<ControllerKind> = Vec::new();
+    // The `log_events` file (no folder until `Handle::set_log_dir`).
+    let mut elog = EventLog::new(None);
 
     while !h.shutdown.load(Ordering::SeqCst) {
+        if let Some(dir) = h.pending_log_dir.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            elog.set_dir(Some(dir));
+        }
+
         // ── Source control, paused or not ────────────────────────────────────
         // Turn Off stays clickable while paused; its request must reach the
         // owning worker now, not queue until unpause (`poll` is skipped then).
@@ -486,7 +505,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         let paused = h.paused.load(Ordering::SeqCst);
         if paused && !last_paused {
             // Drain all macros and held keys when pausing.
-            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx, &mut elog);
             // No events are polled while paused, so their releases are lost.
             mapper.reset_input_state();
         }
@@ -507,7 +526,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
         // ── Mapping ON→OFF edge: release everything ──────────────────────────
         let now_on = mapping_enabled(&h, current_kind);
         if mapping_on && !now_on {
-            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx, &mut elog);
             mapper.reset_input_state();
             // An OFF edge may retry a plug that failed earlier this session.
             pad.rearm();
@@ -543,7 +562,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                         mapper.set_pad(Some(kind));
                         let now_on = mapping_enabled(&h, current_kind);
                         if mapping_on && !now_on {
-                            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+                            drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx, &mut elog);
                             mapper.reset_input_state();
                         }
                         mapping_on = now_on;
@@ -580,7 +599,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                         // The pad is gone, so no ButtonUp / stick-neutral will
                         // ever arrive for what it was holding: release it all
                         // now (iron rules 2–4), as on pause / mapping ON→OFF.
-                        drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx);
+                        drain_and_release(&mut macros, &macro_rx, &mut sink, &mut mouse_sink, mapper.config(), &h.event_tx, &mut elog);
                         // Forget the stick / trigger virtual state too: the
                         // next session's first frame reports every axis, and a
                         // stale `virt_active` would swallow that press.
@@ -617,7 +636,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                     if !mapping_on && !is_diagnostic(action) {
                         continue;
                     }
-                    execute_action(action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
+                    execute_action(action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx, &mut elog);
                 }
             }
 
@@ -628,7 +647,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
                 if !mapping_on && !is_diagnostic(&action) {
                     continue;
                 }
-                execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
+                execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx, &mut elog);
             }
         }
 
@@ -651,7 +670,7 @@ fn run_loop(h: Arc<HandleInner>, mut source: GamepadSource, dry_run: bool, pad: 
     macros.stop_all();
     // Drain any final macro releases.
     while let Ok(action) = macro_rx.try_recv() {
-        execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx);
+        execute_action(&action, &mut sink, &mut mouse_sink, &mut macros, mapper.config(), &h.event_tx, &mut elog);
     }
     // sink.drop() will call release_all_held() — that is the iron-rule guarantee.
     // We explicitly drop to make the intent clear.
@@ -817,11 +836,12 @@ fn drain_and_release(
     mouse_sink: &mut MouseSink,
     cfg: &Config,
     event_tx: &Sender<EngineEvent>,
+    elog: &mut EventLog,
 ) {
     macros.stop_all();
     // Drain macro-emitted releases so sink's refcounts are balanced.
     while let Ok(action) = macro_rx.try_recv() {
-        execute_action(&action, sink, mouse_sink, macros, cfg, event_tx);
+        execute_action(&action, sink, mouse_sink, macros, cfg, event_tx, elog);
     }
     sink.release_all_held();
     mouse_sink.release_all_held();
@@ -834,6 +854,7 @@ fn execute_action(
     macros: &mut MacroEngine,
     cfg: &Config,
     event_tx: &Sender<EngineEvent>,
+    elog: &mut EventLog,
 ) {
     let now_ms = || {
         std::time::SystemTime::now()
@@ -844,16 +865,20 @@ fn execute_action(
     match action {
         KeyAction::Press(k) => {
             let _ = sink.press(k);
+            let ts_ms = now_ms();
+            elog.append(cfg.log_events, &event_log::format_line(ts_ms, "按下", &format!("送出 {k} 按下")));
             let _ = event_tx.send(EngineEvent::KeyEmit {
-                ts_ms: now_ms(),
+                ts_ms,
                 key: k.clone(),
                 action: "down",
             });
         }
         KeyAction::Release(k) => {
             let _ = sink.release(k);
+            let ts_ms = now_ms();
+            elog.append(cfg.log_events, &event_log::format_line(ts_ms, "放開", &format!("送出 {k} 放開")));
             let _ = event_tx.send(EngineEvent::KeyEmit {
-                ts_ms: now_ms(),
+                ts_ms,
                 key: k.clone(),
                 action: "up",
             });
@@ -861,8 +886,10 @@ fn execute_action(
         KeyAction::MacroStart { name, source_id } => {
             if let Some(def) = cfg.macros.get(name) {
                 macros.start(*source_id, def.clone());
+                let ts_ms = now_ms();
+                elog.append(cfg.log_events, &event_log::format_line(ts_ms, "巨集", &format!("巨集「{name}」開始")));
                 let _ = event_tx.send(EngineEvent::MacroStart {
-                    ts_ms: now_ms(),
+                    ts_ms,
                     name: name.clone(),
                 });
             } else {

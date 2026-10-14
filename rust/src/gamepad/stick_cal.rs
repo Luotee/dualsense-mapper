@@ -98,18 +98,57 @@ pub struct StickPositions {
     /// lx, ly, rx, ry
     pub raw: [f32; 4],
     pub cal: [f32; 4],
+    /// Per-axis min / max of `raw` seen since the previous [`StickProbe::take`]
+    /// (lx ly rx ry). A fast rotation can pass the rim between two polls of
+    /// the capture; the extents still carry it (v3.1.2).
+    pub raw_min: [f32; 4],
+    pub raw_max: [f32; 4],
+}
+
+impl StickPositions {
+    /// Positions with the extents collapsed onto `raw`.
+    pub fn at(pad: ControllerKind, raw: [f32; 4], cal: [f32; 4]) -> Self {
+        StickPositions { pad, raw, cal, raw_min: raw, raw_max: raw }
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct StickProbe(Arc<Mutex<Option<StickPositions>>>);
 
 impl StickProbe {
+    /// The latest positions, extents untouched.
     pub fn snapshot(&self) -> Option<StickPositions> {
         *self.0.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub(crate) fn set(&self, p: Option<StickPositions>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    /// The latest positions with the extents seen since the previous `take`,
+    /// then restart the extents at the current raw values.
+    pub fn take(&self) -> Option<StickPositions> {
+        let mut g = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let out = *g;
+        if let Some(p) = g.as_mut() {
+            p.raw_min = p.raw;
+            p.raw_max = p.raw;
+        }
+        out
+    }
+
+    /// Record new positions, folding `raw` into the running extents (the
+    /// incoming `raw_min` / `raw_max` are ignored). A different pad, or
+    /// `None`, restarts them.
+    pub fn set(&self, p: Option<StickPositions>) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g = match (p, g.as_ref()) {
+            (Some(mut n), Some(old)) if old.pad == n.pad => {
+                for i in 0..4 {
+                    n.raw_min[i] = old.raw_min[i].min(n.raw[i]);
+                    n.raw_max[i] = old.raw_max[i].max(n.raw[i]);
+                }
+                Some(n)
+            }
+            (Some(n), _) => Some(StickPositions::at(n.pad, n.raw, n.cal)),
+            (None, _) => None,
+        };
     }
 }
 

@@ -8,6 +8,8 @@ use std::time::Duration;
 
 pub struct RunOptions {
     pub dry_run: bool,
+    /// Folder of the config file; the `log_events` file goes there.
+    pub log_dir: Option<std::path::PathBuf>,
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -17,6 +19,9 @@ pub fn run(cfg: Config, opts: RunOptions) -> Result<()> {
     // Iron Rule #3 is satisfied by that hook (abnormal path) and by
     // KeyboardSink::Drop → release_all_held (normal shutdown path).
     let engine = Engine::spawn(cfg, opts.dry_run)?;
+    if let Some(dir) = opts.log_dir.clone() {
+        engine.handle().set_log_dir(dir);
+    }
     // Bind the engine's key state to the global so the panic hook can drain it.
     safety::register_global(engine.handle().key_state());
     // ...and to its virtual pad, so the hook can unplug it.

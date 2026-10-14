@@ -180,7 +180,7 @@ impl SourceHub {
         let out = self.cal.get(kind).map_or(value, |c| c.axis(axis).apply(value));
         let i = axis as usize;
         if i < 4 {
-            let mut p = self.probe.snapshot().filter(|p| p.pad == kind).unwrap_or(StickPositions { pad: kind, raw: [0.0; 4], cal: [0.0; 4] });
+            let mut p = self.probe.snapshot().filter(|p| p.pad == kind).unwrap_or(StickPositions::at(kind, [0.0; 4], [0.0; 4]));
             p.raw[i] = value;
             p.cal[i] = out;
             self.probe.set(Some(p));
