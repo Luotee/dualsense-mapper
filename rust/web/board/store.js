@@ -7,6 +7,7 @@ import { PADS } from './model.js';
 export const state = {
   config: null,
   connected: new Set(),
+  offPads: new Set(), // pads switched off for this session (header 關; runtime only)
   pad: 'dualsense',
   sel: null,          // slot waiting for a key (capture)
   picked: null,       // palette tile picked by click, waiting for a slot
@@ -42,6 +43,12 @@ export function connectedFrom(s) {
   return new Set(s.connected !== false && s.kind ? [s.kind] : []);
 }
 
+// The pads switched off from a status / event payload (`off_pads`); a payload
+// without the field leaves the current set alone.
+export function offFrom(s, cur = new Set()) {
+  return s && Array.isArray(s.off_pads) ? new Set(s.off_pads) : cur;
+}
+
 export async function setPad(pad, { save = true } = {}) {
   if (!PADS.includes(pad)) return;
   const changed = pad !== state.pad;
@@ -70,6 +77,7 @@ export async function init() {
   ]);
   state.config = config;
   state.connected = connectedFrom(status);
+  state.offPads = offFrom(status);
   state.prefs = prefs || {};
   state.version = version || '';
   state.configPath = configPath || '';
@@ -84,6 +92,7 @@ export async function init() {
   await listen('controller-status', async s => {
     const before = state.connected;
     state.connected = connectedFrom(s);
+    state.offPads = offFrom(s, state.offPads);
     const fresh = [...state.connected].filter(p => !before.has(p));
     if (fresh.length) await setPad(fresh[0]);   // a pad that connects is auto-selected (spec 4.5)
     rerender();

@@ -94,7 +94,7 @@ function tauriMock({ config, version }) {
   const state = {
     config: clone(config),
     prefs: { drawer_open: false, last_tab: null, last_pad: null },
-    status: { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense'] },
+    status: { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense'], off_pads: [] },
     sticks: null,
   };
   window.__mock = state;
@@ -167,6 +167,14 @@ function tauriMock({ config, version }) {
       case 'delete_macro': delete c.macros[a.name]; renameRefs(a.name, null); changed(); return null;
       case 'set_settings': Object.assign(c, clone(a.settings)); changed(); return null;
       case 'set_mapping_enabled': c.mapping_enabled[a.kind] = a.enabled; changed(); return null;
+      case 'set_pad_off': {
+        // Runtime only (no config-changed); the engine re-sends the status.
+        const off = new Set(state.status.off_pads || []);
+        if (a.off) off.add(a.kind); else off.delete(a.kind);
+        state.status.off_pads = ['dualsense', 'ns_pro', 'ns2_pro'].filter(k => off.has(k));
+        setTimeout(() => emit('controller-status', { connected: true, ...clone(state.status), connected_pads: state.status.connected }), 0);
+        return clone(state.status.off_pads);
+      }
       case 'set_rumble_on_connect': c.rumble_on_connect = a.enabled; changed(); return null;
       case 'save_stick_cal': c.stick_cal = c.stick_cal || {}; c.stick_cal[a.pad] = clone(a.cal); changed(); return null;
       case 'reset_stick_cal': if (c.stick_cal) delete c.stick_cal[a.pad]; changed(); return null;
@@ -338,12 +346,53 @@ try {
   await page.click('#board [data-act="rumble"]');
   await settle(page);
   check('連線震動 → set_rumble_on_connect false', (await lastCall(page, 'set_rumble_on_connect'))?.args?.enabled === false);
-  await page.click('#board [data-act="map"]');
+  // Output capsule 關｜鍵鼠｜手把 (v3.2.0).
+  const modeOf = async () => page.locator('#board .omode [aria-pressed="true"]').getAttribute('data-mode');
+  const banner = async () => ((await page.locator('#board .obanner').textContent().catch(() => '')) || '').trim();
+  const dimmed = () => page.evaluate(() => document.getElementById('board').classList.contains('off'));
+  check('capsule shows 鍵鼠 for a fresh config', (await modeOf()) === 'kbm' && (await page.locator('#board .omode button').count()) === 3);
+  check('no 鍵鼠對應 switch any more', (await page.locator('#board [data-act="map"]').count()) === 0);
+  check('DualSense third segment reads 手把', ((await page.locator('#board .omode [data-mode="pad"]').textContent()) || '').trim() === '手把');
+  await page.click('#board .omode [data-mode="off"]');
   await settle(page);
-  const me = await lastCall(page, 'set_mapping_enabled');
-  check('鍵鼠對應 → set_mapping_enabled (dualsense, false)', me?.args?.kind === 'dualsense' && me.args.enabled === false, JSON.stringify(me?.args));
-  check('mapping off dims the board', await page.locator('#board.mock.off, #board .mock.off').count() > 0 || await page.evaluate(() => document.getElementById('board').classList.contains('off')));
-  await page.click('#board [data-act="map"]');
+  const po = await lastCall(page, 'set_pad_off');
+  check('關 sends set_pad_off(pad,true)', po?.args?.kind === 'dualsense' && po.args.off === true, JSON.stringify(po?.args));
+  check('關 shows the gold banner', (await banner()) === '這支手把已關閉' && (await page.locator('#board .obanner.gold').count()) === 1 && (await modeOf()) === 'off', await banner());
+  check('關 dims the board', await dimmed());
+  await page.screenshot({ path: path.join(outDir, 'web-mode-off.png') });
+  check('關 does not write the config', (await countCalls(page, 'set_mapping_enabled')) === 0);
+  const bindsBefore = await countCalls(page, 'set_binding');
+  await tile(page, 'Q').dragTo(slot(page, '5'));
+  await settle(page);
+  check('board still editable while 關 (drag tile → set_binding sent)', (await countCalls(page, 'set_binding')) === bindsBefore + 1);
+  await page.click('#board .omode [data-mode="pad"]');
+  await settle(page);
+  const offBack = await lastCall(page, 'set_pad_off'), me = await lastCall(page, 'set_mapping_enabled');
+  check('手把 clears 關 (set_pad_off false)', offBack?.args?.kind === 'dualsense' && offBack.args.off === false, JSON.stringify(offBack?.args));
+  check('手把 sends set_mapping_enabled(pad,false)', me?.args?.kind === 'dualsense' && me.args.enabled === false, JSON.stringify(me?.args));
+  check('手把 shows the white banner', (await banner()) === '程式不送東西，遊戲直接用手把；下面的鍵鼠綁定這時不作用' && (await page.locator('#board .obanner.white').count()) === 1, await banner());
+  check('手把 dims the board', (await dimmed()) && (await modeOf()) === 'pad');
+  await page.click('#board .omode [data-mode="kbm"]');
+  await settle(page);
+  const mk = await lastCall(page, 'set_mapping_enabled');
+  check('鍵鼠 sends set_mapping_enabled(pad,true)', mk?.args?.kind === 'dualsense' && mk.args.enabled === true, JSON.stringify(mk?.args));
+  check('鍵鼠: no banner, not dimmed', (await page.locator('#board .obanner').count()) === 0 && !(await dimmed()));
+  await page.click('#board [data-pad="ns2_pro"]');
+  await settle(page);
+  check('NS2 third segment reads Xbox', ((await page.locator('#board .omode [data-mode="pad"]').textContent()) || '').trim() === 'Xbox');
+  await page.evaluate(() => { window.__mock.config.mapping_enabled.ns2_pro = false; window.__mockEmit('config-changed', { source: 'external' }); });
+  await settle(page);
+  await page.screenshot({ path: path.join(outDir, 'web-mode-xbox.png') });
+  check('NS2 in Xbox mode shows the Xbox banner', (await banner()) === '遊戲看到的是 Xbox 手把；下面的鍵鼠綁定這時不作用', await banner());
+  await page.evaluate(() => { window.__mock.config.mapping_enabled.ns2_pro = true; window.__mockEmit('config-changed', { source: 'external' }); });
+  await settle(page);
+  await page.evaluate(() => { window.__mockEmit('controller-status', { connected: true, kind: 'dualsense', connected_pads: ['dualsense'], warnings: [], off_pads: ['ns2_pro'] }); });
+  await settle(page);
+  check('off_pads from controller-status selects 關', (await modeOf()) === 'off');
+  await page.click('#board .omode [data-mode="kbm"]');
+  await settle(page);
+  check('header fits 980 px (no overflow)', await page.evaluate(() => { const h = document.querySelector('#board .hdr'); return h.scrollWidth <= h.clientWidth; }));
+  await page.click('#board [data-pad="dualsense"]');
   await settle(page);
 
   // ── Layout: the window never scrolls; the board always fits ──────────────

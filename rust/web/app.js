@@ -1,7 +1,7 @@
 // The key-binding board: one 980×640 screen scaled to the window (spec 3).
 
 import { state, init, onRender } from './board/store.js';
-import { render } from './board/view.js';
+import { render, outputMode } from './board/view.js';
 import { wire } from './board/events.js';
 import { resetInk } from './board/tags.js';
 import { startLive } from './board/live.js';
@@ -17,13 +17,9 @@ function fit() {
 }
 
 function paint() {
-  board.className = 'mock' + (mappingOff() ? ' off' : '');
+  // 關 and 手把 both dim the board; it stays editable (spec v3.2.0 §1).
+  board.className = 'mock' + (outputMode(state, state.pad) !== 'kbm' ? ' off' : '');
   board.innerHTML = render(state);
-}
-
-function mappingOff() {
-  const v = state.config?.mapping_enabled?.[state.pad];
-  return v === false;
 }
 
 onRender(paint);

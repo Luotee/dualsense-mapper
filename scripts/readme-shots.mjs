@@ -79,7 +79,7 @@ await new Promise(r => server.listen(0, '127.0.0.1', r));
 function tauriMock({ config, version }) {
   const listeners = {};
   let nextId = 1;
-  const status = { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense', 'ns2_pro'] };
+  const status = { name: 'DualSense', transport: 'BT', kind: 'dualsense', warnings: [], connected: ['dualsense', 'ns2_pro'], off_pads: [] };
   window.__emit = (name, payload) => {
     for (const l of (listeners[name] || []).slice()) l.cb({ event: name, id: l.id, payload });
   };
@@ -91,6 +91,7 @@ function tauriMock({ config, version }) {
       case 'get_ui_prefs': return { last_pad: 'dualsense' };
       case 'get_app_version': return version;
       case 'get_config_path': return 'D:\\Games\\PadToKBM\\padtokbm.json';
+      case 'set_pad_off': return [];
       default: return null;
     }
   }

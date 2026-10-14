@@ -22,6 +22,28 @@ export function mappingOn(config, pad) {
   return v === undefined ? true : v;
 }
 
+// The selected pad's output mode: 'off' (關, this session), 'kbm' (鍵鼠) or
+// 'pad' (手把 / Xbox), from `mapping_enabled`.
+export function outputMode(st, pad) {
+  if (st.offPads && st.offPads.has(pad)) return 'off';
+  return mappingOn(st.config, pad) ? 'kbm' : 'pad';
+}
+
+export const OFF_BANNER = '這支手把已關閉';
+export function padBanner(pad) {
+  return pad === 'ns2_pro' ? '遊戲看到的是 Xbox 手把；下面的鍵鼠綁定這時不作用' : '程式不送東西，遊戲直接用手把；下面的鍵鼠綁定這時不作用';
+}
+
+function omodeHTML(st, pad) {
+  const m = outputMode(st, pad), xbox = pad === 'ns2_pro';
+  const seg = (mode, cls, icon, label, title) => '<button type="button" class="' + cls + '" data-act="mode" data-mode="' + mode + '" aria-pressed="' + (m === mode) +
+    '" title="' + title + '">' + icon + '<span>' + label + '</span></button>';
+  return '<span class="omode" role="group" aria-label="輸出">' +
+    seg('off', 'o-off', ICON.pause, '關', '這次先關掉這支手把（重開程式會恢復）') +
+    seg('kbm', 'o-kbm', ICON.kbd, '鍵鼠', '手把按鍵送出鍵盤、滑鼠') +
+    seg('pad', xbox ? 'o-xbox' : 'o-pad', ICON.gpad, xbox ? 'Xbox' : '手把', xbox ? '遊戲看到一支 Xbox 手把（需要 ViGEmBus）' : '程式不送東西，遊戲直接用手把') + '</span>';
+}
+
 export function disp(k) {
   if (!k) return '';
   if (k.startsWith('M:')) return k.slice(2);
@@ -57,9 +79,12 @@ export function render(st) {
       PAD_NAMES[p] + '</span></button>' +
       (c ? '<button type="button" class="pwr" data-act="cut" data-cutpad="' + p + '" aria-label="斷開 ' + PAD_NAMES[p] + '" title="斷開手把">' + ICON.power + '</button>' : '') + '</span>';
   }
-  h += '</div><div class="sp"></div>' + sw('rumble', '連線震動', cfg.rumble_on_connect !== false) + sw('map', '鍵鼠對應', mappingOn(cfg, pad)) +
+  h += '</div><div class="sp"></div>' + sw('rumble', '連線震動', cfg.rumble_on_connect !== false) + omodeHTML(st, pad) +
     '<button type="button" class="gear" data-act="setopen" aria-label="設定" title="設定">' + ICON.gear + '</button></header>';
   h += '<div class="stage"></div>' + padSvg(pad);
+  const om = outputMode(st, pad);
+  if (om === 'off') h += '<div class="obanner gold" role="status">' + ICON.pause + '<span>' + OFF_BANNER + '</span></div>';
+  else if (om === 'pad') h += '<div class="obanner white" role="status"><span>' + padBanner(pad) + '</span></div>';
   const hot = {};
   for (const g of L.groups) {
     if (g.q) h += '<div class="qcap" style="left:' + (g.x - 124) + 'px;top:' + (g.y - 82) + 'px">' + qcapHTML(pad, g.q, g.q === 'L' ? modes.l : modes.r) + '</div>';
