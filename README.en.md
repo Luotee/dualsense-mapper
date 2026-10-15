@@ -93,6 +93,8 @@ Look at 「關｜鍵鼠｜手把」 at the top right (on the Switch 2 Pro the th
   「安裝 ViGEmBus」 (Install ViGEmBus) downloads the official installer, checks the file and runs it (it asks for administrator rights).
 - **關** (off): this controller sends nothing for now; restarting the app brings it back.
 
+In any mode but 鍵鼠 the bindings below are locked; switch back to 鍵鼠 to edit them.
+
 Windows 11 is recommended (Windows 10's Bluetooth limits it to about 17 Hz).
 
 ### Where is the config? Can I edit it directly?

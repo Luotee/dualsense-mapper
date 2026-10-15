@@ -354,6 +354,34 @@ try {
   const modeOf = async () => page.locator('#board .omode [aria-pressed="true"]').getAttribute('data-mode');
   const banner = async () => ((await page.locator('#board .obanner').textContent().catch(() => '')) || '').trim();
   const dimmed = () => page.evaluate(() => document.getElementById('board').classList.contains('off'));
+  const locked = () => page.evaluate(() => document.getElementById('board').classList.contains('lock'));
+  const bannerBox = () => page.evaluate(() => {
+    const b = document.querySelector('#board .obanner'); if (!b) return null;
+    const r = b.getBoundingClientRect(); return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+  });
+  const bannerCentred = async () => { const c = await bannerBox(); return !!c && Math.abs(c.x - 490) <= 1 && Math.abs(c.y - 228) <= 1; };
+  // Click / drag by coordinates, so whatever covers the target gets the event (as a real mouse would).
+  const centre = async loc => { const r = await loc.boundingBox(); return [r.x + r.width / 2, r.y + r.height / 2]; };
+  const mouseClick = async loc => { const [x, y] = await centre(loc); await page.mouse.click(x, y); await settle(page); };
+  const MUT = ['set_binding', 'swap_bindings', 'set_pad_tables', 'clear_pad', 'reset_pad', 'set_settings', 'set_trigger_mode', 'set_macro', 'set_capture_active'];
+  async function expectLocked(what) {
+    check(`${what} locks the board`, await locked());
+    const before = (await calls(page)).filter(c => MUT.includes(c.cmd)).length;
+    await mouseClick(tile(page, 'Q'));
+    check(`${what}: tile click does not pick`, (await page.locator('#board .tile.picked').count()) === 0);
+    await mouseClick(slot(page, '5'));
+    check(`${what}: slot click does not wait for a key`, (await page.locator('#board .slot.wait').count()) === 0 && (await page.locator('#board .capbar').count()) === 0);
+    await tile(page, 'W').dragTo(slot(page, '6'), { force: true, timeout: 3000 }).catch(() => {});
+    await settle(page);
+    if (await page.locator('#board [data-act="tp"]').count()) await mouseClick(page.locator('#board [data-act="tp"]'));
+    if (await page.locator('#board .qcap [data-mode="single"]').count()) await mouseClick(page.locator('#board .qcap [data-mode="single"]').first());
+    for (const a of ['reset', 'clear', 'undo', 'redo']) check(`${what}: ${a} disabled`, await page.locator(`#board [data-act="${a}"]`).isDisabled());
+    await page.keyboard.press('Control+z');
+    await settle(page);
+    const after = (await calls(page)).filter(c => MUT.includes(c.cmd)).length;
+    check(`${what}: no edit reached the backend`, after === before, `${before} → ${after}`);
+    check(`${what}: header still works (capsule clickable)`, await page.locator('#board .omode [data-mode="kbm"]').isEnabled());
+  }
   check('capsule shows 鍵鼠 for a fresh config', (await modeOf()) === 'kbm' && (await page.locator('#board .omode button').count()) === 3);
   check('no 鍵鼠對應 switch any more', (await page.locator('#board [data-act="map"]').count()) === 0);
   check('DualSense third segment reads 手把', ((await page.locator('#board .omode [data-mode="pad"]').textContent()) || '').trim() === '手把');
@@ -365,10 +393,9 @@ try {
   check('關 dims the board', await dimmed());
   await page.screenshot({ path: path.join(outDir, 'web-mode-off.png') });
   check('關 does not write the config', (await countCalls(page, 'set_mapping_enabled')) === 0);
-  const bindsBefore = await countCalls(page, 'set_binding');
-  await tile(page, 'Q').dragTo(slot(page, '5'));
-  await settle(page);
-  check('board still editable while 關 (drag tile → set_binding sent)', (await countCalls(page, 'set_binding')) === bindsBefore + 1);
+  // Not 鍵鼠 → the board is locked (v3.2.1): nothing below the header edits.
+  check('關 banner sits at the stage centre (490, 228)', await bannerCentred(), JSON.stringify(await bannerBox()));
+  await expectLocked('關');
   await page.click('#board .omode [data-mode="pad"]');
   await settle(page);
   const offBack = await lastCall(page, 'set_pad_off'), me = await lastCall(page, 'set_mapping_enabled');
@@ -376,11 +403,29 @@ try {
   check('手把 sends set_mapping_enabled(pad,false)', me?.args?.kind === 'dualsense' && me.args.enabled === false, JSON.stringify(me?.args));
   check('手把 shows the white banner', (await banner()) === '程式不送東西，遊戲直接用手把；下面的鍵鼠綁定這時不作用' && (await page.locator('#board .obanner.white').count()) === 1, await banner());
   check('手把 dims the board', (await dimmed()) && (await modeOf()) === 'pad');
+  check('手把 banner sits at the stage centre', await bannerCentred(), JSON.stringify(await bannerBox()));
+  await expectLocked('手把');
   await page.click('#board .omode [data-mode="kbm"]');
   await settle(page);
   const mk = await lastCall(page, 'set_mapping_enabled');
   check('鍵鼠 sends set_mapping_enabled(pad,true)', mk?.args?.kind === 'dualsense' && mk.args.enabled === true, JSON.stringify(mk?.args));
   check('鍵鼠: no banner, not dimmed', (await page.locator('#board .obanner').count()) === 0 && !(await dimmed()));
+  check('鍵鼠 unlocks the board', !(await locked()) && !(await page.locator('#board [data-act="clear"]').isDisabled()));
+  {
+    const nb = await countCalls(page, 'set_binding');
+    await tile(page, 'Q').dragTo(slot(page, '5'));
+    await settle(page);
+    check('鍵鼠: drag tile → set_binding sent again', (await countCalls(page, 'set_binding')) === nb + 1);
+  }
+  // A slot waiting for a key is cancelled when the board locks.
+  await slot(page, '0').click();
+  await settle(page);
+  await page.click('#board .omode [data-mode="off"]');
+  await settle(page);
+  check('關 cancels a waiting slot (capture off, no bar)', (await page.locator('#board .slot.wait').count()) === 0 &&
+    (await page.locator('#board .capbar').count()) === 0 && (await lastCall(page, 'set_capture_active'))?.args?.active === false);
+  await page.click('#board .omode [data-mode="kbm"]');
+  await settle(page);
   await page.click('#board [data-pad="ns2_pro"]');
   await settle(page);
   check('NS2 third segment reads Xbox', ((await page.locator('#board .omode [data-mode="pad"]').textContent()) || '').trim() === 'Xbox');
@@ -388,6 +433,8 @@ try {
   await settle(page);
   await page.screenshot({ path: path.join(outDir, 'web-mode-xbox.png') });
   check('NS2 in Xbox mode shows the Xbox banner', (await banner()) === '遊戲看到的是 Xbox 手把；下面的鍵鼠綁定這時不作用', await banner());
+  check('Xbox banner sits at the stage centre', await bannerCentred(), JSON.stringify(await bannerBox()));
+  await expectLocked('Xbox');
   await page.evaluate(() => { window.__mock.config.mapping_enabled.ns2_pro = true; window.__mockEmit('config-changed', { source: 'external' }); });
   await settle(page);
   await page.evaluate(() => { window.__mockEmit('controller-status', { connected: true, kind: 'dualsense', connected_pads: ['dualsense'], warnings: [], off_pads: ['ns2_pro'] }); });
@@ -459,6 +506,14 @@ try {
     });
     check(`no scroll and board fits @${w}x${h}`,
       m.sw === m.cw && m.sh === m.ch && m.l >= -0.5 && m.t >= -0.5 && m.r <= m.iw + 0.5 && m.b <= m.ih + 0.5, JSON.stringify(m));
+    // The header band runs the full window width, flush with the board's header (v3.2.1).
+    const band = await page.evaluate(() => {
+      const b = document.getElementById('hband'), h = document.querySelector('#board .hdr');
+      if (!b) return null;
+      const r = b.getBoundingClientRect(), q = h.getBoundingClientRect();
+      return { l: r.left, r: r.right, t: r.top, b: r.bottom, hb: q.bottom, iw: innerWidth, same: getComputedStyle(b).backgroundColor === getComputedStyle(h).backgroundColor };
+    });
+    check(`header band spans the window @${w}x${h}`, !!band && band.l <= 0 && band.r >= band.iw && band.t <= 0 && Math.abs(band.b - band.hb) <= 1 && band.same, JSON.stringify(band));
   }
   await page.setViewportSize({ width: 980, height: 640 });
   const ob = await page.evaluate(() => ({
@@ -517,6 +572,10 @@ try {
   check('clicking a slot starts key capture', (await lastCall(page, 'set_capture_active'))?.args?.active === true &&
     (await countCalls(page, 'set_capture_active')) === capBefore + 1);
   check('capture bar text is exact', ((await page.locator('#board .capbar').textContent()) || '').trim() === '按鍵鼠上的鍵，或點下面的方塊（Esc 取消）');
+  {
+    const c = await page.evaluate(() => { const r = document.querySelector('#board .capbar').getBoundingClientRect(); return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }; });
+    check('capture bar sits on the gap between the two cards (centre y 400, x 490)', Math.abs(c.y - 400) <= 0.5 && Math.abs(c.x - 490) <= 1, JSON.stringify(c));
+  }
   check('waiting slot has the keycap badge', (await slot(page, '3').locator('.kc').count()) === 1);
   await page.keyboard.press('f');
   await settle(page);

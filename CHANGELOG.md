@@ -3,7 +3,31 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.2.1] - 2026-10-15
+
+### Changed
+
+- **關 and 手把 / Xbox lock the board.** In any mode but 鍵鼠 the bindings do
+  nothing, so nothing below the header can be edited any more: slots,
+  palette tiles, the touchpad cursor switch, 快捷頁／單鍵, the macro box,
+  恢復預設 / 全部清除 / 復原 / 重做 and Ctrl+Z are all ignored, and both
+  cards are dimmed (v3.2.0 dimmed them but left them editable). A slot
+  waiting for a key is cancelled when the board locks. The header stays
+  live, so you can switch back. An open macro editor stays usable until it
+  is closed.
+- The 關 and 手把 / Xbox banners sit in the middle of the controller card
+  instead of at its top edge.
+- The 「按鍵鼠上的鍵，或點下面的方塊（Esc 取消）」 bar is centred on the gap
+  between the two cards (it sat 3.5 px low).
+- **Look:** fewer frames and no bevels. The window's outer frame and the
+  keyboard / macro bases' frames are gone, card frames are 2 px with 4 px
+  corners, keys and tiles have a flat 2 px shadow under them, the header is
+  dark ink, the pink is a deeper berry, and 全部清除 is a red outline button
+  (it was the same green as 恢復預設). The app and tray icons are unchanged.
+- **Window fit:** the header colour runs the full window width, so a wide or
+  full-screen window no longer shows the board as a picture with grey bars
+  beside its header. A window taller than 980:640 keeps the board at the top.
+- README screenshots retaken.
 
 ### Documentation
 

@@ -30,6 +30,13 @@ export function outputMode(st, pad) {
   return mappingOn(st.config, pad) ? 'kbm' : 'pad';
 }
 
+// Any mode but 鍵鼠 locks everything below the header: the bindings do
+// nothing then, so editing them only confuses (v3.2.1). An open macro editor
+// stays usable until it is closed.
+export function boardLocked(st) {
+  return outputMode(st, st.pad) !== 'kbm' && !st.medit;
+}
+
 export const OFF_BANNER = '這支手把已關閉';
 export function padBanner(pad) {
   return pad === 'ns2_pro' ? '遊戲看到的是 Xbox 手把；下面的鍵鼠綁定這時不作用' : '程式不送東西，遊戲直接用手把；下面的鍵鼠綁定這時不作用';
@@ -108,10 +115,11 @@ export function render(st) {
   h += popHTML();
   if (st.medit) h += editorHTML(st);
   if (st.setOpen) h += settingsHTML(st);
-  h += '<footer class="ftr"><button type="button" class="b-def" data-act="reset">恢復預設</button><button type="button" class="b-clr" data-act="clear">全部清除</button>' +
+  const lk = boardLocked(st), dis = on => (on && !lk ? '' : ' disabled');
+  h += '<footer class="ftr"><button type="button" class="b-def" data-act="reset"' + dis(true) + '>恢復預設</button><button type="button" class="b-clr" data-act="clear"' + dis(true) + '>全部清除</button>' +
     '<span class="note">' + esc(st.note) + '</span><div class="sp"></div>' +
-    '<button type="button" class="b-hist" data-act="undo" title="復原（Ctrl+Z）"' + (st.canUndo ? '' : ' disabled') + '>' + ICON.undo + '復原</button>' +
-    '<button type="button" class="b-hist redo" data-act="redo" title="重做（Ctrl+Y）"' + (st.canRedo ? '' : ' disabled') + '><span class="flip">' + ICON.undo + '</span>重做</button></footer>';
+    '<button type="button" class="b-hist" data-act="undo" title="復原（Ctrl+Z）"' + dis(st.canUndo) + '>' + ICON.undo + '復原</button>' +
+    '<button type="button" class="b-hist redo" data-act="redo" title="重做（Ctrl+Y）"' + dis(st.canRedo) + '><span class="flip">' + ICON.undo + '</span>重做</button></footer>';
   return h;
 }
 
