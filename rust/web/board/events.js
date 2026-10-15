@@ -5,6 +5,7 @@ import { state, rerender, setPad } from './store.js';
 import * as act from './actions.js';
 import { boardBinds } from './model.js';
 import { macroPages } from './palette.js';
+import { boardLocked } from './view.js';
 
 const drag = { key: null, from: null, dropped: false, step: null };
 const hooks = { click: [], dragover: [], drop: [], dragstart: [], dragend: [], keydown: [] };
@@ -13,7 +14,16 @@ const hooks = { click: [], dragover: [], drop: [], dragstart: [], dragend: [], k
 export function hook(kind, f) { hooks[kind].push(f); }
 const consumed = (kind, ev, el) => hooks[kind].some(f => f(ev, el, drag));
 
+// What a locked board ignores: everything below the header except the macro
+// editor and the settings window (which are not open while it is locked).
+const LOCKED = '.slot,.tile,.tstack,.qcap,.pal,.lines,[data-act="reset"],[data-act="clear"],[data-act="undo"],[data-act="redo"],[data-mpage]';
+
 export function wire(board) {
+  const gate = ev => {
+    if (!boardLocked(state)) return;
+    if (ev.target === board || ev.target.closest(LOCKED)) { ev.preventDefault(); ev.stopPropagation(); }
+  };
+  for (const kind of ['click', 'dragstart', 'drop', 'wheel']) board.addEventListener(kind, gate, { capture: true, passive: false });
   board.addEventListener('click', ev => {
     if (consumed('click', ev)) return;
     const qb = ev.target.closest('[data-qs]');
@@ -95,7 +105,7 @@ export function wire(board) {
 
   document.addEventListener('keydown', ev => {
     if (consumed('keydown', ev)) return;
-    if (!(ev.ctrlKey || ev.metaKey) || state.setOpen || state.medit || /INPUT|TEXTAREA/.test(ev.target.tagName)) return;
+    if (!(ev.ctrlKey || ev.metaKey) || state.setOpen || state.medit || boardLocked(state) || /INPUT|TEXTAREA/.test(ev.target.tagName)) return;
     const k = ev.key.toLowerCase();
     if (k === 'z' && !ev.shiftKey) { ev.preventDefault(); act.undo(); }
     else if (k === 'y' || (k === 'z' && ev.shiftKey)) { ev.preventDefault(); act.redo(); }

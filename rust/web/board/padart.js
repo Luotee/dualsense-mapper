@@ -111,13 +111,16 @@ function fill(role) {
   return ['#ffcf2e', 2.5];
 }
 function glyphColor(g) { return g.role === 'smallT' ? K : '#ffffff'; }
+// The board (v3.2.1 palette) recolours the pad; the app / tray icons do not.
+var BOARD = { '#a8587a': '#b0405f', '#6e3a52': '#6f2338', '#4b5a7c': '#2b2f3a', '#6c7ba0': '#555b6c' };
+function boardFill(role) { var f = fill(role); return [BOARD[f[0]] || f[0], f[1]]; }
 
 function padArt(pad, sh) {
   var M = model(pad, sh), h = '<svg viewBox="-30 -30 360 270" aria-hidden="true"><g transform="translate(0,5)" opacity=".28">';
   M.parts.forEach(function (p) { if (p.role === 'body' || p.role === 'trig') h += '<path d="' + p.d + '"' + (p.tf ? ' transform="' + p.tf + '"' : '') + ' fill="' + K + '"/>'; });
   h += '</g>';
   M.parts.forEach(function (p) {
-    var f = fill(p.role);
+    var f = boardFill(p.role);
     h += '<path d="' + p.d + '"' + (p.tf ? ' transform="' + p.tf + '"' : '') + ' fill="' + f[0] + '"' + (f[1] ? ' stroke="' + K + '" stroke-width="' + f[1] + '" stroke-linejoin="round"' : '') + '/>';
   });
   h += M.glyphs.map(function (g) { return glyphSvg(g, glyphColor(g)); }).join('');
